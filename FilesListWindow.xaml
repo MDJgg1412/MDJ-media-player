@@ -5,25 +5,49 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
         Title="Files List" Height="450" Width="500"
-        ResizeMode="CanMinimize">
-    <Grid Margin="8">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="*" />
-            <RowDefinition Height="Auto" />
-        </Grid.RowDefinitions>
+        ResizeMode="CanMinimize"
+        WindowStyle="None" AllowsTransparency="False" Background="{DynamicResource WindowBackgroundBrush}">
+    <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="38" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
 
-        <ListBox x:Name="PlaylistListBox"
-                 Grid.Row="0"
-                 ItemsSource="{Binding Playlist}"
-                 SelectedItem="{Binding Selected, Mode=TwoWay}"
-                 DisplayMemberPath="Title" />
+            <!-- Titlebar -->
+            <Grid Grid.Row="0" Background="{DynamicResource CardAltBackgroundBrush}">
+                <DockPanel Margin="4" LastChildFill="True">
+                    <!-- Window controls -->
+                    <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" VerticalAlignment="Center" Margin="0,0,8,0">
+                        <Button x:Name="MinimizeButton" Style="{StaticResource TitlebarButtonStyle}" Click="MinimizeButton_Click">
+                            <Path Data="{StaticResource MinimizeIcon}" Stroke="#FFF" StrokeThickness="2" Width="12" Height="12" />
+                        </Button>
+                        <Button x:Name="CloseButton" Style="{StaticResource TitlebarButtonStyle}" Click="CloseButton_Click">
+                            <Path Data="{StaticResource CloseIcon}" Stroke="#FFF" StrokeThickness="1.5" Width="12" Height="12" />
+                        </Button>
+                    </StackPanel>
 
-        <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
-            <Button Content="Open Playlist" Width="88" Margin="0,0,6,0" Padding="6,2" FontSize="11" Click="OpenPlaylistButton_Click" />
-            <Button Content="Save Playlist" Width="88" Margin="0,0,6,0" Padding="6,2" FontSize="11" Click="SavePlaylistButton_Click" />
-            <Button Content="Add Video" Width="78" Margin="0,0,6,0" Padding="6,2" FontSize="11" Command="{Binding AddFilesCommand}" />
-            <Button Content="Clear Playlist" Width="88" Margin="0,0,6,0" Padding="6,2" FontSize="11" Click="ClearPlaylistButton_Click" />
-            <Button Content="Close" Width="62" Padding="6,2" FontSize="11" Click="CloseButton_Click" />
-        </StackPanel>
-    </Grid>
+                    <!-- Drag region with window title -->
+                    <Grid Background="Transparent" MouseDown="Titlebar_MouseDown">
+                        <TextBlock Text="Files List" Foreground="#FFF" VerticalAlignment="Center" HorizontalAlignment="Center" FontSize="14" FontWeight="SemiBold" />
+                    </Grid>
+                </DockPanel>
+            </Grid>
+
+            <!-- Content area -->
+            <ListBox x:Name="PlaylistListBox"
+                     Grid.Row="1"
+                     ItemsSource="{Binding Playlist}"
+                     SelectedItem="{Binding Selected, Mode=TwoWay}"
+                     DisplayMemberPath="Title" />
+
+            <!-- Bottom action bar (kept for convenience) -->
+            <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,8">
+                <Button Content="Open Playlist" Width="88" Margin="0,0,6,0" Padding="6,2" FontSize="11" Click="OpenPlaylistButton_Click" />
+                <Button Content="Save Playlist" Width="88" Margin="0,0,6,0" Padding="6,2" FontSize="11" Click="SavePlaylistButton_Click" />
+                <Button Content="Add Video" Width="78" Margin="0,0,6,0" Padding="6,2" FontSize="11" Command="{Binding AddFilesCommand}" />
+                <Button Content="Clear Playlist" Width="88" Margin="0,0,6,0" Padding="6,2" FontSize="11" Click="ClearPlaylistButton_Click" />
+                <Button Content="Close" Width="62" Padding="6,2" FontSize="11" Click="CloseButton_Click" />
+            </StackPanel>
+        </Grid>
 </Window>

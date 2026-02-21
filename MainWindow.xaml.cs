@@ -19,6 +19,7 @@ namespace MDJMediaPlayer
         private bool _hasLastMousePosition = false;
         private ExtendedModeWindow? _extendedModeWindow;
         private bool _isExtendedMode = false;
+        private SFXWindow? _sfxWindow;
         // (No external fallback initialized) - keep MediaElement primary
 
         public MainWindow()
@@ -118,7 +119,7 @@ namespace MDJMediaPlayer
             {
                 var asm = System.Reflection.Assembly.GetEntryAssembly() ?? System.Reflection.Assembly.GetExecutingAssembly();
                 var name = asm.GetName().Name ?? "MDJ Media Player";
-                var version = asm.GetName().Version?.ToString() ?? "1.0.0";
+                var version = "1.1.0";
                 var msg = $"{name}\nVersion: {version}\n\nA simple WPF media player.";
                 MessageBox.Show(msg, "About", MessageBoxButton.OK, MessageBoxImage.Information);
             }
@@ -126,6 +127,27 @@ namespace MDJMediaPlayer
             {
                 MessageBox.Show("MDJ Media Player\nVersion: unknown", "About", MessageBoxButton.OK, MessageBoxImage.Information);
             }
+        }
+
+        private void SFXButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (_sfxWindow == null)
+            {
+                _sfxWindow = new SFXWindow();
+                _sfxWindow.Owner = this;
+            }
+            _sfxWindow.Show();
+            if (_sfxWindow.WindowState == WindowState.Minimized)
+            {
+                _sfxWindow.WindowState = WindowState.Normal;
+            }
+            _sfxWindow.Activate();
+        }
+
+        protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+        {
+            _sfxWindow?.ForceClose();
+            base.OnClosing(e);
         }
 
         private void FullscreenButton_Click(object sender, RoutedEventArgs e)

@@ -3,6 +3,8 @@ using Microsoft.Win32;
 using System;
 using System.IO;
 using System.Windows;
+using System.Windows.Input;
+using System.Windows.Media;
 
 namespace MDJMediaPlayer
 {
@@ -17,6 +19,33 @@ namespace MDJMediaPlayer
         private void CloseButton_Click(object sender, RoutedEventArgs e)
         {
             this.Close();
+        }
+
+        private void MinimizeButton_Click(object sender, RoutedEventArgs e)
+        {
+            this.WindowState = WindowState.Minimized;
+        }
+
+        private void Titlebar_MouseDown(object sender, MouseButtonEventArgs e)
+        {
+            if (e.ChangedButton != MouseButton.Left) return;
+
+            // Avoid dragging when clicking on interactive controls
+            var source = e.OriginalSource as DependencyObject;
+            while (source != null)
+            {
+                if (source is System.Windows.Controls.Button
+                    || source is System.Windows.Controls.Primitives.ToggleButton
+                    || source is System.Windows.Controls.ComboBox
+                    || source is System.Windows.Controls.Menu
+                    || source is System.Windows.Controls.MenuItem)
+                {
+                    return;
+                }
+                source = VisualTreeHelper.GetParent(source);
+            }
+
+            try { this.DragMove(); } catch { }
         }
 
         private void SavePlaylistButton_Click(object sender, RoutedEventArgs e)

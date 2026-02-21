@@ -1,0 +1,58 @@
+<Window x:Class="MDJMediaPlayer.SFXWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:MDJMediaPlayer"
+        mc:Ignorable="d"
+        Title="SFX" Height="360" Width="520" ResizeMode="NoResize"
+        WindowStyle="None" AllowsTransparency="False" Background="{DynamicResource WindowBackgroundBrush}">
+    <Grid>
+        
+        <Grid.RowDefinitions>
+            <RowDefinition Height="38" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" Background="{DynamicResource CardAltBackgroundBrush}">
+            <DockPanel Margin="4" LastChildFill="True">
+                <Menu DockPanel.Dock="Left" VerticalAlignment="Bottom">
+                <MenuItem Header="File">
+                    <MenuItem Header="Add SFX" Click="AddSfxButton_Click" />
+                    <MenuItem Header="Save SFX Playlist" Click="SaveSfxPlaylist_Click" />
+                    <MenuItem Header="Open SFX Playlist" Click="OpenSfxPlaylist_Click" />
+                    <MenuItem Header="Clear SFX List" Click="ClearSfxList_Click" />
+                </MenuItem>
+                </Menu>
+
+                <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" VerticalAlignment="Center" Margin="0,0,8,0">
+                <Button x:Name="MinimizeButton" Style="{StaticResource TitlebarButtonStyle}" Click="MinimizeButton_Click">
+                    <Path Data="{StaticResource MinimizeIcon}" Stroke="#FFF" StrokeThickness="2" Width="12" Height="12" />
+                </Button>
+                <Button x:Name="CloseButton" Style="{StaticResource TitlebarButtonStyle}" Click="CloseButton_Click">
+                    <Path Data="{StaticResource CloseIcon}" Stroke="#FFF" StrokeThickness="1.5" Width="12" Height="12" />
+                </Button>
+                </StackPanel>
+
+                <Grid Background="Transparent" MouseDown="Titlebar_MouseDown">
+                    <TextBlock Text="SFX" Foreground="#FFF" VerticalAlignment="Center" HorizontalAlignment="Center" FontSize="14" FontWeight="SemiBold" />
+                </Grid>
+            </DockPanel>
+        </Grid>
+
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <ItemsControl ItemsSource="{Binding SfxItems}">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <WrapPanel />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Button Content="{Binding DisplayName}" Margin="6" Padding="10,6" MinWidth="120" Click="SfxItemButton_Click" />
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+    </Grid>
+</Window>
