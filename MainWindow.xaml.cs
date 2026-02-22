@@ -119,7 +119,7 @@ namespace MDJMediaPlayer
             {
                 var asm = System.Reflection.Assembly.GetEntryAssembly() ?? System.Reflection.Assembly.GetExecutingAssembly();
                 var name = asm.GetName().Name ?? "MDJ Media Player";
-                var version = "1.1.0";
+                var version = "1.1.1";
                 var msg = $"{name}\nVersion: {version}\n\nA simple WPF media player.";
                 MessageBox.Show(msg, "About", MessageBoxButton.OK, MessageBoxImage.Information);
             }
@@ -136,7 +136,15 @@ namespace MDJMediaPlayer
                 _sfxWindow = new SFXWindow();
                 _sfxWindow.Owner = this;
             }
-            _sfxWindow.Show();
+            if (_sfxWindow.IsPlaying)
+            {
+                _sfxWindow.StopPlayback();
+                return;
+            }
+            if (!_sfxWindow.IsVisible)
+            {
+                _sfxWindow.Show();
+            }
             if (_sfxWindow.WindowState == WindowState.Minimized)
             {
                 _sfxWindow.WindowState = WindowState.Normal;
@@ -146,7 +154,24 @@ namespace MDJMediaPlayer
 
         protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
         {
-            _sfxWindow?.ForceClose();
+            try { _sfxWindow?.ForceClose(); } catch { }
+            try { _extendedModeWindow?.Close(); } catch { }
+            try
+            {
+                var others = new System.Collections.Generic.List<Window>();
+                foreach (Window w in Application.Current.Windows)
+                {
+                    if (w != this && w is not SFXWindow)
+                    {
+                        others.Add(w);
+                    }
+                }
+                foreach (var w in others)
+                {
+                    try { w.Close(); } catch { }
+                }
+            }
+            catch { }
             base.OnClosing(e);
         }
 

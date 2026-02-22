@@ -13,11 +13,15 @@ namespace MDJMediaPlayer
     {
         public ObservableCollection<SfxItem> SfxItems { get; } = new();
         private readonly MediaPlayer _player = new();
+        public bool IsPlaying { get; private set; }
+        private string? _currentPath;
 
         public SFXWindow()
         {
             InitializeComponent();
             DataContext = this;
+            _player.MediaEnded += (s, e) => { IsPlaying = false; _currentPath = null; };
+            _player.MediaFailed += (s, e) => { IsPlaying = false; _currentPath = null; };
         }
 
         private void MinimizeButton_Click(object sender, RoutedEventArgs e)
@@ -35,16 +39,19 @@ namespace MDJMediaPlayer
 
         protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
         {
+            StopPlayback();
             if (!_allowClose)
             {
                 e.Cancel = true;
                 Hide();
+                return;
             }
             base.OnClosing(e);
         }
 
         private void CloseButton_Click(object sender, RoutedEventArgs e)
         {
+            StopPlayback();
             Hide();
         }
 
@@ -105,9 +112,20 @@ namespace MDJMediaPlayer
                 return;
             }
 
+            // Toggle stop if the same item is already playing
+            if (IsPlaying && string.Equals(_currentPath, item.FilePath, StringComparison.OrdinalIgnoreCase))
+            {
+                _player.Stop();
+                IsPlaying = false;
+                _currentPath = null;
+                return;
+            }
+
             _player.Open(new Uri(item.FilePath, UriKind.Absolute));
             _player.Position = TimeSpan.Zero;
             _player.Play();
+            IsPlaying = true;
+            _currentPath = item.FilePath;
         }
 
         private void SaveSfxPlaylist_Click(object sender, RoutedEventArgs e)
@@ -219,8 +237,16 @@ namespace MDJMediaPlayer
                 MessageBox.Show("SFX list is already empty.", "Clear SFX List", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
+            StopPlayback();
             SfxItems.Clear();
             MessageBox.Show("SFX list cleared.", "Clear SFX List", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+
+        public void StopPlayback()
+        {
+            _player.Stop();
+            IsPlaying = false;
+            _currentPath = null;
         }
 
         public sealed class SfxItem
