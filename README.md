@@ -1,7 +1,7 @@
 # MDJ-media-player
 i created a media player for fun
 
-Its good for a video presentation
+Its good for a video presentation, and simple
 
 This picture here is 1.0.0
 
