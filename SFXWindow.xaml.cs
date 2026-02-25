@@ -22,6 +22,7 @@ namespace MDJMediaPlayer
             DataContext = this;
             _player.MediaEnded += (s, e) => { IsPlaying = false; _currentPath = null; };
             _player.MediaFailed += (s, e) => { IsPlaying = false; _currentPath = null; };
+            try { LoadPersisted(); } catch { }
         }
 
         private void MinimizeButton_Click(object sender, RoutedEventArgs e)
@@ -97,6 +98,7 @@ namespace MDJMediaPlayer
 
                 SfxItems.Add(new SfxItem(filePath, Path.GetFileName(filePath)));
             }
+            try { SavePersisted(); } catch { }
         }
 
         private void SfxItemButton_Click(object sender, RoutedEventArgs e)
@@ -228,6 +230,7 @@ namespace MDJMediaPlayer
             {
                 MessageBox.Show("Failed to open SFX playlist: " + ex.Message, "Open SFX Playlist", MessageBoxButton.OK, MessageBoxImage.Error);
             }
+            try { SavePersisted(); } catch { }
         }
 
         private void ClearSfxList_Click(object sender, RoutedEventArgs e)
@@ -240,6 +243,7 @@ namespace MDJMediaPlayer
             StopPlayback();
             SfxItems.Clear();
             MessageBox.Show("SFX list cleared.", "Clear SFX List", MessageBoxButton.OK, MessageBoxImage.Information);
+            try { SavePersisted(); } catch { }
         }
 
         public void StopPlayback()
@@ -247,6 +251,49 @@ namespace MDJMediaPlayer
             _player.Stop();
             IsPlaying = false;
             _currentPath = null;
+        }
+
+        private static string GetAppDataDir()
+        {
+            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MDJMediaPlayer");
+            return dir;
+        }
+
+        private static string GetSfxPlaylistPath()
+        {
+            return Path.Combine(GetAppDataDir(), "sfx-playlist.sfx");
+        }
+
+        public void SavePersisted()
+        {
+            var path = GetSfxPlaylistPath();
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            using var writer = new StreamWriter(path, false);
+            foreach (var item in SfxItems)
+            {
+                writer.WriteLine(item.FilePath);
+            }
+        }
+
+        private void LoadPersisted()
+        {
+            var path = GetSfxPlaylistPath();
+            if (!File.Exists(path)) return;
+            var baseDir = Path.GetDirectoryName(path) ?? string.Empty;
+            foreach (var raw in File.ReadLines(path))
+            {
+                var line = raw.Trim();
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                if (line.StartsWith("#")) continue;
+                var sfxPath = line;
+                if (!Path.IsPathRooted(sfxPath))
+                {
+                    sfxPath = Path.GetFullPath(Path.Combine(baseDir, sfxPath));
+                }
+                if (!File.Exists(sfxPath)) continue;
+                if (SfxItems.Any(i => string.Equals(i.FilePath, sfxPath, StringComparison.OrdinalIgnoreCase))) continue;
+                SfxItems.Add(new SfxItem(sfxPath, Path.GetFileName(sfxPath)));
+            }
         }
 
         public sealed class SfxItem

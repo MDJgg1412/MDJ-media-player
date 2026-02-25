@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.IO;
 
 namespace MDJMediaPlayer
 {
@@ -57,6 +58,8 @@ namespace MDJMediaPlayer
             this.Deactivated += MainWindow_Deactivated;
             // Ensure theme combo has default selection applied
             ApplyTheme("Dark");
+
+            try { LoadPersistedMainPlaylist(); } catch { }
         }
 
         private void ThemeComboBox_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
@@ -119,7 +122,7 @@ namespace MDJMediaPlayer
             {
                 var asm = System.Reflection.Assembly.GetEntryAssembly() ?? System.Reflection.Assembly.GetExecutingAssembly();
                 var name = asm.GetName().Name ?? "MDJ Media Player";
-                var version = "1.1.1";
+                var version = "1.1.2";
                 var msg = $"{name}\nVersion: {version}\n\nA simple WPF media player.";
                 MessageBox.Show(msg, "About", MessageBoxButton.OK, MessageBoxImage.Information);
             }
@@ -154,6 +157,8 @@ namespace MDJMediaPlayer
 
         protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
         {
+            try { SavePersistedMainPlaylist(); } catch { }
+            try { _sfxWindow?.SavePersisted(); } catch { }
             try { _sfxWindow?.ForceClose(); } catch { }
             try { _extendedModeWindow?.Close(); } catch { }
             try
@@ -201,6 +206,61 @@ namespace MDJMediaPlayer
         private void ExitButton_Click(object sender, RoutedEventArgs e)
         {
             this.Close();
+        }
+
+        private static string GetAppDataDir()
+        {
+            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MDJMediaPlayer");
+            return dir;
+        }
+
+        private static string GetVideoPlaylistPath()
+        {
+            return Path.Combine(GetAppDataDir(), "video-playlist.m3u");
+        }
+
+        private void LoadPersistedMainPlaylist()
+        {
+            var path = GetVideoPlaylistPath();
+            if (!File.Exists(path)) return;
+
+            var baseDir = Path.GetDirectoryName(path) ?? string.Empty;
+            foreach (var raw in File.ReadLines(path))
+            {
+                var line = raw.Trim();
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                if (line.StartsWith("#")) continue;
+                var mediaPath = line;
+                if (!Path.IsPathRooted(mediaPath))
+                {
+                    mediaPath = Path.GetFullPath(Path.Combine(baseDir, mediaPath));
+                }
+                if (!File.Exists(mediaPath)) continue;
+                if (ViewModel.Playlist.Any(p => string.Equals(p.FilePath, mediaPath, StringComparison.OrdinalIgnoreCase))) continue;
+                ViewModel.Playlist.Add(new Models.MediaItem
+                {
+                    FilePath = mediaPath,
+                    Title = System.IO.Path.GetFileName(mediaPath)
+                });
+            }
+            if (ViewModel.Selected == null && ViewModel.Playlist.Count > 0)
+            {
+                ViewModel.Selected = ViewModel.Playlist[0];
+            }
+        }
+
+        private void SavePersistedMainPlaylist()
+        {
+            var path = GetVideoPlaylistPath();
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            using var writer = new StreamWriter(path, false);
+            writer.WriteLine("#EXTM3U");
+            foreach (var item in ViewModel.Playlist)
+            {
+                var title = string.IsNullOrWhiteSpace(item.Title) ? System.IO.Path.GetFileName(item.FilePath) : item.Title;
+                writer.WriteLine("#EXTINF:-1," + title);
+                writer.WriteLine(item.FilePath);
+            }
         }
 
         private void ViewModel_PropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)

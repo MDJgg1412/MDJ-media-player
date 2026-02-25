@@ -1,8 +1,22 @@
-# MDJ-media-player
-i created a media player for fun
+# MDJ Media Player
 
-Its good for a video presentation, and simple
+Modern WPF media player (MVVM) built for .NET 8.
 
-This picture here is 1.0.0
+Requirements:
+- .NET 8 SDK
+- Visual Studio 2022/2023 with .NET desktop workload
 
-<img width="1089" height="622" alt="Screenshot 2026-02-18 163651" src="https://github.com/user-attachments/assets/d66ee6e5-0cec-472a-a6a5-796e068243c8" />
+Run:
+1. Open `MDJMediaPlayer.sln` or the `MDJMediaPlayer.csproj` in Visual Studio.
+2. Build and Run (F5).
+
+Features:
+- Play MP3/WAV/MP4 media using `MediaElement`.
+- Playlist support, add multiple files.
+- Play/Pause, Stop, Next, Previous controls.
+- Seek bar, current time / total duration display.
+- Volume control.
+
+Notes:
+- UI styling and animations are implemented with XAML styles.
+- No external paid libraries used.
