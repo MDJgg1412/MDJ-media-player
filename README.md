@@ -16,7 +16,9 @@ Features:
 - Play/Pause, Stop, Next, Previous controls.
 - Seek bar, current time / total duration display.
 - Volume control.
+- SFX
 
 Notes:
 - UI styling and animations are implemented with XAML styles.
 - No external paid libraries used.
+
