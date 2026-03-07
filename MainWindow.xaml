@@ -41,7 +41,7 @@
             </StackPanel>
 
             <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" VerticalAlignment="Center" Margin="0,0,6,0">
-                <Button Command="{Binding AddFilesCommand}" Content="Add Video" Width="100" Margin="8,0" />
+                <Button Command="{Binding AddFilesCommand}" Content="Add Files" Width="100" Margin="8,0" />
                 <Button x:Name="FilesListButton" Content="Files List" Width="100" Margin="8,0" Click="FilesListButton_Click" />
                 <Button x:Name="SFXButton" Content="SFX" Width="80" Margin="8,0" Click="SFXButton_Click" />
                 <Button x:Name="FullscreenButton" Content="Fullscreen" Width="100" Margin="8,0" Click="FullscreenButton_Click" />
@@ -56,6 +56,35 @@
             <Grid MouseMove="MediaArea_MouseMove" Background="Transparent">
                 <Grid x:Name="MediaHost">
                     <MediaElement Name="mediaElement" LoadedBehavior="Manual" UnloadedBehavior="Manual" Stretch="Uniform" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" />
+                </Grid>
+
+                <Grid x:Name="AudioWaveOverlay"
+                      HorizontalAlignment="Stretch"
+                      VerticalAlignment="Center"
+                      Margin="8,0"
+                      Height="160"
+                      IsHitTestVisible="False"
+                      Visibility="Collapsed">
+                    <Path x:Name="AudioWavePath"
+                          StrokeThickness="0"
+                          SnapsToDevicePixels="True">
+                        <Path.Fill>
+                            <LinearGradientBrush StartPoint="0,0.5" EndPoint="1,0.5">
+                                <GradientStop Color="#FFD40000" Offset="0.00" />
+                                <GradientStop Color="#FFFF5A00" Offset="0.14" />
+                                <GradientStop Color="#FFFFD000" Offset="0.30" />
+                                <GradientStop Color="#FF8FC300" Offset="0.48" />
+                                <GradientStop Color="#FF00A53A" Offset="0.62" />
+                                <GradientStop Color="#FF008C8C" Offset="0.76" />
+                                <GradientStop Color="#FF0078D7" Offset="0.90" />
+                                <GradientStop Color="#FF2D3CFF" Offset="1.00" />
+                            </LinearGradientBrush>
+                        </Path.Fill>
+                    </Path>
+                    <Rectangle Height="2"
+                               VerticalAlignment="Bottom"
+                               Margin="0,0,0,2"
+                               Fill="#55343A43" />
                 </Grid>
 
                 <!-- "NO VIDEO FOUND" message -->

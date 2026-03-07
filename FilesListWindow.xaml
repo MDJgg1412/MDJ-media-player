@@ -45,7 +45,7 @@
             <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,8">
                 <Button Content="Open Playlist" Width="88" Margin="0,0,6,0" Padding="6,2" FontSize="11" Click="OpenPlaylistButton_Click" />
                 <Button Content="Save Playlist" Width="88" Margin="0,0,6,0" Padding="6,2" FontSize="11" Click="SavePlaylistButton_Click" />
-                <Button Content="Add Video" Width="78" Margin="0,0,6,0" Padding="6,2" FontSize="11" Command="{Binding AddFilesCommand}" />
+                <Button Content="Add Files" Width="82" Margin="0,0,6,0" Padding="6,2" FontSize="11" Command="{Binding AddFilesCommand}" />
                 <Button Content="Clear Playlist" Width="88" Margin="0,0,6,0" Padding="6,2" FontSize="11" Click="ClearPlaylistButton_Click" />
                 <Button Content="Close" Width="62" Padding="6,2" FontSize="11" Click="CloseButton_Click" />
             </StackPanel>
