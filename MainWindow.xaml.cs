@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Effects;
 using System.IO;
 using System.Collections.Generic;
 using System.Buffers;
@@ -37,24 +38,39 @@ namespace MDJMediaPlayer
         private const int AudioWavePointCount = 180;
         private const int AudioEnergyHistorySize = 4096;
         private const int AudioSampleHistorySize = 16384;
-        private const int SpectrumBarCount = 96;
-        private const double SpectrumBarGap = 0.6d;
-        private const double SpectrumTailProfile = 0.38d;
+        private const int SpectrumBarCount = 156;
+        private const double CircularBarGapRatio = 0.38d;
+        private const double CircularInwardRatio = 0.24d;
+        private const int WaveRenderMinSampleCount = 512;
+        private const int WaveRenderSampleCountFactor = 3;
         private const uint ProbeSampleRate = 44100;
         private const uint ProbeChannels = 2;
         private const int ProbeSampleDecimation = 8;
         private const int WaveSmoothingPasses = 1;
         private const long WaveProbeMaxFileBytes = 768L * 1024L * 1024L;
         private const int EnvelopeBytesPerSample = 2048;
-        private const int WaveProbeDriftThresholdMs = 750;
-        private const int WaveProbeSoftSyncIntervalMs = 700;
+        private const int WaveProbeDriftThresholdMs = 160;
+        private const int WaveProbeSoftSyncIntervalMs = 250;
         private const double WaveVisibleHistoryScale = 0.38d;
-        private const double WaveSyncCompensationMs = 0d;
+        // Compensate output/device buffering so visuals align with what is actually heard.
+        private const double WaveSyncCompensationMs = 180d;
+        private const double WaveAmplitudeProbeWindowMs = 12d;
+        private const double WaveBarAmplitudeWindowMs = 9d;
+        private const double WaveSpinBaseDegPerSec = 14d;
+        private const double WaveSpinBoostDegPerSec = 52d;
+        private const int WaveOrbBaseCount = 30;
+        private const int WaveOrbFullscreenExtraCount = 14;
+        private const double WaveOrbSafeOffsetPx = 16d;
+        private const double WaveOrbFullscreenSpeedBoost = 1.22d;
+        private const double WaveOrbFullscreenSizeBoost = 1.10d;
         private readonly object _audioEnergyLock = new();
         private readonly double[] _audioEnergyHistory = new double[AudioEnergyHistorySize];
         private readonly double[] _audioSampleHistory = new double[AudioSampleHistorySize];
         private readonly double[] _audioSampleTimeHistory = new double[AudioSampleHistorySize];
         private readonly double[] _spectrumBarLevels = new double[SpectrumBarCount];
+        private readonly double[] _waveRenderSampleValues = new double[AudioSampleHistorySize];
+        private readonly double[] _waveRenderSampleTimes = new double[AudioSampleHistorySize];
+        private readonly double[] _waveDrawLevels = new double[SpectrumBarCount];
         private int _audioEnergyWriteIndex = 0;
         private bool _audioEnergyFilled = false;
         private int _audioSampleWriteIndex = 0;
@@ -73,13 +89,44 @@ namespace MDJMediaPlayer
         private VlcMediaPlayer.LibVLCAudioFlushCb? _waveProbeFlushCb;
         private VlcMediaPlayer.LibVLCAudioDrainCb? _waveProbeDrainCb;
         private DateTime _lastWaveProbeSoftSyncUtc = DateTime.MinValue;
+        private DateTime _lastWaveSpinUpdateUtc = DateTime.MinValue;
         private double _waveProbeToMediaOffsetMs = 0d;
         private bool _waveProbeOffsetInitialized = false;
+        private double _waveSpinAngle = 0d;
+        private readonly List<WaveOrbState> _waveOrbs = new();
+        private readonly Random _waveOrbRandom = new(942137);
+        private DateTime _lastWaveOrbUpdateUtc = DateTime.MinValue;
+        private double _waveOrbClockSeconds = 0d;
+        private double _lastWaveOrbViewportWidth = 0d;
+        private double _lastWaveOrbViewportHeight = 0d;
+        private Panel? _audioWaveOverlayHomeParent;
+        private int _audioWaveOverlayHomeIndex = -1;
         // (No external fallback initialized) - keep MediaElement primary
+
+        private sealed class WaveOrbState
+        {
+            public required System.Windows.Shapes.Ellipse Shape { get; init; }
+            public required GradientStop CoreStop { get; init; }
+            public required GradientStop MidStop { get; init; }
+            public required GradientStop OuterStop { get; init; }
+            public double PositionX;
+            public double PositionY;
+            public double VelocityX;
+            public double VelocityY;
+            public double WanderX;
+            public double WanderY;
+            public double WanderTimer;
+            public double BaseSizePx;
+            public double PulsePhase;
+            public double PulseSpeed;
+            public double HueOffset;
+        }
 
         public MainWindow()
         {
             InitializeComponent();
+            InitializeWaveOrbs();
+            CachePlaybackVisualHomeParents();
 
             // Fade-in on startup
             this.Opacity = 0;
@@ -94,7 +141,7 @@ namespace MDJMediaPlayer
             _timer.Tick += Timer_Tick;
             _timer.Start();
 
-            _audioWaveTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(33) };
+            _audioWaveTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(25) };
             _audioWaveTimer.Tick += AudioWaveTimer_Tick;
 
             // Auto-hide controls timer
@@ -117,6 +164,15 @@ namespace MDJMediaPlayer
             ApplyTheme("Dark");
 
             try { LoadPersistedMainPlaylist(); } catch { }
+        }
+
+        private void CachePlaybackVisualHomeParents()
+        {
+            if (AudioWaveOverlay.Parent is Panel parent)
+            {
+                _audioWaveOverlayHomeParent = parent;
+                _audioWaveOverlayHomeIndex = parent.Children.IndexOf(AudioWaveOverlay);
+            }
         }
 
         private void ThemeComboBox_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
@@ -161,6 +217,8 @@ namespace MDJMediaPlayer
             {
                 FullscreenButton.Content = "Fullscreen";
             }
+
+            SyncWaveOrbsWithWindowState();
         }
 
         private void MinimizeButton_Click(object sender, RoutedEventArgs e)
@@ -179,7 +237,7 @@ namespace MDJMediaPlayer
             {
                 var asm = System.Reflection.Assembly.GetEntryAssembly() ?? System.Reflection.Assembly.GetExecutingAssembly();
                 var name = asm.GetName().Name ?? "MDJ Media Player";
-                var version = "1.2.0";
+                var version = "1.3.0";
                 var msg = $"{name}\nVersion: {version}\n\nA simple WPF media player.";
                 MessageBox.Show(msg, "About", MessageBoxButton.OK, MessageBoxImage.Information);
             }
@@ -563,6 +621,10 @@ namespace MDJMediaPlayer
                 _audioWaveTimer?.Stop();
                 AudioWaveOverlay.Visibility = Visibility.Collapsed;
                 AudioWavePath.Data = null;
+                _lastWaveSpinUpdateUtc = DateTime.MinValue;
+                _lastWaveOrbUpdateUtc = DateTime.MinValue;
+                _lastWaveOrbViewportWidth = 0d;
+                _lastWaveOrbViewportHeight = 0d;
                 return;
             }
 
@@ -591,24 +653,43 @@ namespace MDJMediaPlayer
 
             var width = AudioWaveOverlay.ActualWidth;
             var height = AudioWaveOverlay.ActualHeight;
-            var baselineY = Math.Max(8d, height - 6d);
-            var maxBarHeight = Math.Max(18d, baselineY - 4d);
             var barCount = _spectrumBarLevels.Length;
-            if (barCount < 2)
+            if (barCount < 12)
             {
                 AudioWavePath.Data = null;
                 return;
             }
 
-            var (sampleValues, sampleTimes) = GetRecentAudioSamplesWithTimes(Math.Max(800, barCount * 10));
-            var hasTimedSamples = sampleValues.Length >= 64;
+            var minSide = Math.Min(width, height);
+            var center = new Point(width * 0.5d, height * 0.5d);
+            var ringRadius = Math.Max(42d, minSide * 0.24d);
+            var maxBarHeight = Math.Max(14d, minSide * 0.17d);
+            var outerRingDiameter = Math.Clamp(ringRadius * 2.34d, 140d, Math.Max(140d, minSide - 8d));
+            var innerRingDiameter = Math.Clamp(ringRadius * 1.98d, 110d, Math.Max(110d, outerRingDiameter - (minSide * 0.11d)));
+
+            AudioWaveOuterRing.Width = outerRingDiameter;
+            AudioWaveOuterRing.Height = outerRingDiameter;
+            AudioWaveInnerRing.Width = innerRingDiameter;
+            AudioWaveInnerRing.Height = innerRingDiameter;
+
+            var sampleCount = CopyRecentAudioSamplesWithTimes(
+                Math.Max(WaveRenderMinSampleCount, barCount * WaveRenderSampleCountFactor),
+                _waveRenderSampleValues,
+                _waveRenderSampleTimes);
+            var sampleValues = _waveRenderSampleValues.AsSpan(0, sampleCount);
+            var sampleTimes = _waveRenderSampleTimes.AsSpan(0, sampleCount);
+            var hasTimedSamples = sampleCount >= 42;
             var mediaNowMs = Math.Max(0d, mediaElement.Position.TotalMilliseconds - WaveSyncCompensationMs);
             var probeNowMs = GetProbeAlignedTimeMs(mediaNowMs);
             var targetAmplitude = 0d;
 
             if (hasTimedSamples)
             {
-                targetAmplitude = SampleAmplitudeNearTime(sampleValues, sampleTimes, probeNowMs, 4d);
+                targetAmplitude = SampleRmsNearTime(sampleValues, sampleTimes, probeNowMs, WaveAmplitudeProbeWindowMs);
+                if (targetAmplitude < 0d)
+                {
+                    targetAmplitude = SampleAmplitudeNearTime(sampleValues, sampleTimes, probeNowMs, 6d);
+                }
                 if (targetAmplitude < 0d)
                 {
                     targetAmplitude = 0d;
@@ -640,121 +721,546 @@ namespace MDJMediaPlayer
 
             if (targetAmplitude >= _waveAmplitudeSmoother)
             {
-                _waveAmplitudeSmoother = (_waveAmplitudeSmoother * 0.03d) + (targetAmplitude * 0.97d);
+                _waveAmplitudeSmoother = (_waveAmplitudeSmoother * 0.04d) + (targetAmplitude * 0.96d);
             }
             else
             {
-                _waveAmplitudeSmoother = (_waveAmplitudeSmoother * 0.5d) + (targetAmplitude * 0.5d);
+                _waveAmplitudeSmoother = (_waveAmplitudeSmoother * 0.40d) + (targetAmplitude * 0.60d);
             }
 
-            // Higher user volume should visibly increase wave size.
-            var volumeHeightFactor = 0.55d + (ViewModel.Volume * 1.25d);
-            var dynamicMaxBarHeight = Math.Min(height - 4d, maxBarHeight * volumeHeightFactor);
-            var volumeAmplitudeBoost = 0.75d + (ViewModel.Volume * 1.45d);
+            var volumeHeightFactor = 0.44d + (ViewModel.Volume * 0.74d);
+            var dynamicMaxBarHeight = Math.Min(minSide * 0.30d, maxBarHeight * volumeHeightFactor);
+            var volumeAmplitudeBoost = 0.70d + (ViewModel.Volume * 0.95d);
+            var floorHeightPx = Math.Max(1.2d, dynamicMaxBarHeight * 0.055d);
 
-            var drawLevels = new double[barCount];
+            var drawLevels = _waveDrawLevels;
             if (hasTimedSamples)
             {
-                var trailStepMs = 8d;
-                var sampleWindowMs = 4d;
+                var trailStepMs = Math.Max(0.9d, (WaveVisibleHistoryScale * 1000d) / barCount);
+                var sampleWindowMs = Math.Max(4.5d, WaveBarAmplitudeWindowMs);
                 for (var i = 0; i < barCount; i++)
                 {
                     var barTimeMs = probeNowMs - (i * trailStepMs);
-                    var amplitude = SampleAmplitudeNearTime(sampleValues, sampleTimes, barTimeMs, sampleWindowMs);
+                    var amplitude = SampleRmsNearTime(sampleValues, sampleTimes, barTimeMs, sampleWindowMs);
                     if (amplitude < 0d)
                     {
-                        amplitude = _waveAmplitudeSmoother * 0.35d;
+                        amplitude = SampleAmplitudeNearTime(sampleValues, sampleTimes, barTimeMs, sampleWindowMs * 0.5d);
                     }
 
-                    var profile = Math.Exp(-(double)i / (barCount * SpectrumTailProfile));
-                    var normalized = Math.Clamp(amplitude * (1.0d + (profile * 1.7d)) * volumeAmplitudeBoost, 0d, 1.2d);
+                    if (amplitude < 0d)
+                    {
+                        amplitude = _waveAmplitudeSmoother * 0.52d;
+                    }
+
+                    var normalized = Math.Clamp(amplitude * volumeAmplitudeBoost, 0d, 1.3d);
                     var targetPx = dynamicMaxBarHeight * Math.Clamp(normalized, 0d, 1d);
 
                     var current = _spectrumBarLevels[i];
                     if (targetPx >= current)
                     {
-                        current = (current * 0.02d) + (targetPx * 0.98d);
+                        current = (current * 0.07d) + (targetPx * 0.93d);
                     }
                     else
                     {
-                        current = (current * 0.65d) + (targetPx * 0.35d);
+                        current = (current * 0.38d) + (targetPx * 0.62d);
                     }
 
                     _spectrumBarLevels[i] = current;
-                    var tailVolumeBoost = 0.85d + (ViewModel.Volume * 0.9d);
-                    drawLevels[i] = Math.Clamp(current * (0.35d + (0.65d * profile)) * tailVolumeBoost, 0d, dynamicMaxBarHeight);
+                    drawLevels[i] = Math.Clamp(Math.Max(floorHeightPx, current), floorHeightPx, dynamicMaxBarHeight);
                 }
             }
             else
             {
-                var headTargetPx = dynamicMaxBarHeight * Math.Clamp(_waveAmplitudeSmoother * volumeAmplitudeBoost, 0d, 1.22d);
+                var headTargetPx = dynamicMaxBarHeight * Math.Clamp(_waveAmplitudeSmoother * volumeAmplitudeBoost, 0d, 1.2d);
+                var wrapped = _spectrumBarLevels[barCount - 1];
                 for (var i = barCount - 1; i >= 1; i--)
                 {
-                    var shifted = _spectrumBarLevels[i - 1];
-                    var travelDecay = Math.Max(0.86d, 0.988d - (i * 0.0012d));
-                    shifted *= travelDecay;
-                    var current = _spectrumBarLevels[i] * 0.95d;
+                    var shifted = _spectrumBarLevels[i - 1] * 0.97d;
+                    var current = _spectrumBarLevels[i] * 0.92d;
                     _spectrumBarLevels[i] = Math.Max(current, shifted);
                 }
+                _spectrumBarLevels[0] = Math.Max(_spectrumBarLevels[0] * 0.92d, wrapped * 0.97d);
 
-                _spectrumBarLevels[0] = (_spectrumBarLevels[0] * 0.18d) + (headTargetPx * 0.82d);
+                var headIndex = (int)((DateTime.UtcNow.Ticks / TimeSpan.TicksPerMillisecond / 28d) % barCount);
+                if (headIndex < 0)
+                {
+                    headIndex += barCount;
+                }
+
+                _spectrumBarLevels[headIndex] = (_spectrumBarLevels[headIndex] * 0.18d) + (headTargetPx * 0.82d);
                 for (var i = 0; i < barCount; i++)
                 {
-                    var profile = Math.Exp(-(double)i / (barCount * SpectrumTailProfile));
-                    var tailVolumeBoost = 0.85d + (ViewModel.Volume * 0.9d);
-                    drawLevels[i] = Math.Clamp(_spectrumBarLevels[i] * (0.35d + (0.65d * profile)) * tailVolumeBoost, 0d, dynamicMaxBarHeight);
+                    var shaped = _spectrumBarLevels[i];
+                    drawLevels[i] = Math.Clamp(Math.Max(floorHeightPx, shaped), floorHeightPx, dynamicMaxBarHeight);
                 }
             }
 
-            AudioWavePath.Data = BuildSpectrumGeometry(width, baselineY, drawLevels);
+            UpdateWaveOrbPositions(center, ringRadius, dynamicMaxBarHeight, minSide, width, height);
+            AudioWavePath.Data = BuildCircularSpectrumGeometry(width, height, center, ringRadius, drawLevels);
+            UpdateWaveSpinTransform();
         }
 
-        private static Geometry BuildSpectrumGeometry(double width, double baselineY, IReadOnlyList<double> heights)
+        private void UpdateWaveSpinTransform()
         {
-            if (width <= 1d || baselineY <= 1d || heights.Count == 0)
+            if (AudioWaveSpinTransform == null)
+            {
+                return;
+            }
+
+            var now = DateTime.UtcNow;
+            if (_lastWaveSpinUpdateUtc == DateTime.MinValue)
+            {
+                _lastWaveSpinUpdateUtc = now;
+                return;
+            }
+
+            var dt = (now - _lastWaveSpinUpdateUtc).TotalSeconds;
+            _lastWaveSpinUpdateUtc = now;
+            if (dt <= 0d || dt > 0.25d)
+            {
+                dt = 1d / 60d;
+            }
+
+            var spinSpeed = WaveSpinBaseDegPerSec + (_waveAmplitudeSmoother * WaveSpinBoostDegPerSec);
+            _waveSpinAngle = (_waveSpinAngle + (spinSpeed * dt)) % 360d;
+            if (_waveSpinAngle < 0d)
+            {
+                _waveSpinAngle += 360d;
+            }
+
+            AudioWaveSpinTransform.Angle = _waveSpinAngle;
+        }
+
+        private void InitializeWaveOrbs()
+        {
+            if (AudioWaveOrbCanvas == null || _waveOrbs.Count > 0)
+            {
+                return;
+            }
+
+            EnsureWaveOrbCount(GetTargetWaveOrbCount());
+        }
+
+        private int GetTargetWaveOrbCount()
+        {
+            return IsWindowFullscreenForOrbs()
+                ? WaveOrbBaseCount + WaveOrbFullscreenExtraCount
+                : WaveOrbBaseCount;
+        }
+
+        private bool IsWindowFullscreenForOrbs()
+        {
+            return this.WindowState == WindowState.Maximized;
+        }
+
+        private void SyncWaveOrbsWithWindowState()
+        {
+            if (AudioWaveOrbCanvas == null)
+            {
+                return;
+            }
+
+            EnsureWaveOrbCount(GetTargetWaveOrbCount());
+            ResetWaveOrbLayout(randomizeVelocity: true);
+        }
+
+        private void ResetWaveOrbLayout(bool randomizeVelocity)
+        {
+            foreach (var orb in _waveOrbs)
+            {
+                orb.PositionX = -1d;
+                orb.PositionY = -1d;
+                orb.WanderTimer = 0d;
+                if (randomizeVelocity)
+                {
+                    orb.VelocityX = (_waveOrbRandom.NextDouble() * 2d - 1d) * (12d + (_waveOrbRandom.NextDouble() * 18d));
+                    orb.VelocityY = (_waveOrbRandom.NextDouble() * 2d - 1d) * (12d + (_waveOrbRandom.NextDouble() * 18d));
+                }
+            }
+        }
+
+        private void EnsureWaveOrbCount(int targetCount)
+        {
+            if (AudioWaveOrbCanvas == null || targetCount < 0)
+            {
+                return;
+            }
+
+            while (_waveOrbs.Count < targetCount)
+            {
+                _waveOrbs.Add(CreateWaveOrbState());
+            }
+
+            while (_waveOrbs.Count > targetCount)
+            {
+                var lastIndex = _waveOrbs.Count - 1;
+                var orb = _waveOrbs[lastIndex];
+                AudioWaveOrbCanvas.Children.Remove(orb.Shape);
+                _waveOrbs.RemoveAt(lastIndex);
+            }
+        }
+
+        private WaveOrbState CreateWaveOrbState()
+        {
+            if (AudioWaveOrbCanvas == null)
+            {
+                throw new InvalidOperationException("Orb canvas is not initialized.");
+            }
+
+            var coreStop = new GradientStop(Colors.White, 0d);
+            var midStop = new GradientStop(Colors.White, 0.58d);
+            var outerStop = new GradientStop(Color.FromArgb(0, 255, 255, 255), 1d);
+            var fillBrush = new RadialGradientBrush
+            {
+                GradientOrigin = new Point(0.36d, 0.36d),
+                Center = new Point(0.50d, 0.50d),
+                RadiusX = 0.66d,
+                RadiusY = 0.66d
+            };
+            fillBrush.GradientStops.Add(coreStop);
+            fillBrush.GradientStops.Add(midStop);
+            fillBrush.GradientStops.Add(outerStop);
+
+            var baseSizePx = 8d + (_waveOrbRandom.NextDouble() * 10d);
+            var orb = new System.Windows.Shapes.Ellipse
+            {
+                Width = baseSizePx,
+                Height = baseSizePx,
+                Opacity = 0.82d,
+                Fill = fillBrush,
+                IsHitTestVisible = false,
+                SnapsToDevicePixels = true,
+                Effect = new BlurEffect
+                {
+                    Radius = 1.4d + (_waveOrbRandom.NextDouble() * 3.6d),
+                    KernelType = KernelType.Gaussian,
+                    RenderingBias = RenderingBias.Quality
+                }
+            };
+
+            AudioWaveOrbCanvas.Children.Add(orb);
+            var wanderAngle = _waveOrbRandom.NextDouble() * Math.PI * 2d;
+            return new WaveOrbState
+            {
+                Shape = orb,
+                CoreStop = coreStop,
+                MidStop = midStop,
+                OuterStop = outerStop,
+                PositionX = -1d,
+                PositionY = -1d,
+                VelocityX = (_waveOrbRandom.NextDouble() * 2d - 1d) * (12d + (_waveOrbRandom.NextDouble() * 18d)),
+                VelocityY = (_waveOrbRandom.NextDouble() * 2d - 1d) * (12d + (_waveOrbRandom.NextDouble() * 18d)),
+                WanderX = Math.Cos(wanderAngle),
+                WanderY = Math.Sin(wanderAngle),
+                WanderTimer = 0.20d + (_waveOrbRandom.NextDouble() * 1.40d),
+                BaseSizePx = baseSizePx,
+                PulsePhase = _waveOrbRandom.NextDouble() * Math.PI * 2d,
+                PulseSpeed = 0.42d + (_waveOrbRandom.NextDouble() * 0.90d),
+                HueOffset = _waveOrbRandom.NextDouble() * 360d,
+            };
+        }
+
+        private void UpdateWaveOrbPositions(Point center, double ringRadius, double maxBarHeight, double minSide, double width, double height)
+        {
+            if (AudioWaveOrbCanvas == null)
+            {
+                return;
+            }
+
+            EnsureWaveOrbCount(GetTargetWaveOrbCount());
+            if (_waveOrbs.Count == 0)
+            {
+                return;
+            }
+
+            var now = DateTime.UtcNow;
+            if (_lastWaveOrbUpdateUtc == DateTime.MinValue)
+            {
+                _lastWaveOrbUpdateUtc = now;
+            }
+
+            var dt = (now - _lastWaveOrbUpdateUtc).TotalSeconds;
+            _lastWaveOrbUpdateUtc = now;
+            if (dt <= 0d || dt > 0.25d)
+            {
+                dt = 1d / 60d;
+            }
+
+            _waveOrbClockSeconds += dt;
+            var viewportChanged =
+                Math.Abs(width - _lastWaveOrbViewportWidth) > 56d ||
+                Math.Abs(height - _lastWaveOrbViewportHeight) > 56d;
+            if (viewportChanged)
+            {
+                _lastWaveOrbViewportWidth = width;
+                _lastWaveOrbViewportHeight = height;
+                ResetWaveOrbLayout(randomizeVelocity: false);
+            }
+
+            var isFullscreen = IsWindowFullscreenForOrbs();
+            var amplitude = Math.Clamp(_waveAmplitudeSmoother, 0d, 1d);
+            var safeRadius = ringRadius + maxBarHeight + WaveOrbSafeOffsetPx;
+            var fullscreenSpeedScale = isFullscreen ? WaveOrbFullscreenSpeedBoost : 1d;
+            var fullscreenSizeScale = isFullscreen ? WaveOrbFullscreenSizeBoost : 1d;
+            var driftForce = (5d + (amplitude * 8d)) * fullscreenSpeedScale;
+            var randomForce = (18d + (amplitude * 22d)) * fullscreenSpeedScale;
+            var damping = 0.972d;
+            var maxSpeed = (15d + (amplitude * 20d)) * fullscreenSpeedScale;
+            var boundsMargin = 6d;
+            var leftBound = boundsMargin;
+            var topBound = boundsMargin;
+            var rightBound = Math.Max(leftBound + 1d, width - boundsMargin);
+            var bottomBound = Math.Max(topBound + 1d, height - boundsMargin);
+
+            foreach (var orb in _waveOrbs)
+            {
+                if (orb.PositionX < 0d || orb.PositionY < 0d)
+                {
+                    PlaceOrbOutsideWave(orb, center, safeRadius, width, height);
+                }
+
+                orb.WanderTimer -= dt;
+                if (orb.WanderTimer <= 0d)
+                {
+                    var wanderAngle = _waveOrbRandom.NextDouble() * Math.PI * 2d;
+                    orb.WanderX = Math.Cos(wanderAngle);
+                    orb.WanderY = Math.Sin(wanderAngle);
+                    orb.WanderTimer = 0.20d + (_waveOrbRandom.NextDouble() * 1.60d);
+                }
+
+                var jitterX = (_waveOrbRandom.NextDouble() * 2d) - 1d;
+                var jitterY = (_waveOrbRandom.NextDouble() * 2d) - 1d;
+                orb.VelocityX += ((orb.WanderX * driftForce) + (jitterX * randomForce)) * dt;
+                orb.VelocityY += ((orb.WanderY * driftForce) + (jitterY * randomForce)) * dt;
+                orb.VelocityX *= damping;
+                orb.VelocityY *= damping;
+                var speed = Math.Sqrt((orb.VelocityX * orb.VelocityX) + (orb.VelocityY * orb.VelocityY));
+                if (speed > maxSpeed)
+                {
+                    var clamp = maxSpeed / speed;
+                    orb.VelocityX *= clamp;
+                    orb.VelocityY *= clamp;
+                }
+
+                orb.PositionX += orb.VelocityX * dt;
+                orb.PositionY += orb.VelocityY * dt;
+
+                var pulse = 0.78d + (0.24d * Math.Sin((_waveOrbClockSeconds * orb.PulseSpeed) + orb.PulsePhase));
+                var size = Math.Clamp(
+                    orb.BaseSizePx * fullscreenSizeScale * (0.86d + (pulse * 0.30d) + (amplitude * 0.16d)),
+                    7d,
+                    Math.Max(11d, minSide * (isFullscreen ? 0.07d : 0.06d)));
+                var half = size * 0.5d;
+
+                if (orb.PositionX < leftBound + half)
+                {
+                    orb.PositionX = leftBound + half;
+                    orb.VelocityX = Math.Abs(orb.VelocityX) * 0.84d;
+                }
+                else if (orb.PositionX > rightBound - half)
+                {
+                    orb.PositionX = rightBound - half;
+                    orb.VelocityX = -Math.Abs(orb.VelocityX) * 0.84d;
+                }
+
+                if (orb.PositionY < topBound + half)
+                {
+                    orb.PositionY = topBound + half;
+                    orb.VelocityY = Math.Abs(orb.VelocityY) * 0.84d;
+                }
+                else if (orb.PositionY > bottomBound - half)
+                {
+                    orb.PositionY = bottomBound - half;
+                    orb.VelocityY = -Math.Abs(orb.VelocityY) * 0.84d;
+                }
+
+                var dx = orb.PositionX - center.X;
+                var dy = orb.PositionY - center.Y;
+                var minDistance = safeRadius + (half * 0.55d);
+                var distance = Math.Sqrt((dx * dx) + (dy * dy));
+                if (distance < minDistance && distance > 0.001d)
+                {
+                    var nx = dx / distance;
+                    var ny = dy / distance;
+                    orb.PositionX = center.X + (nx * minDistance);
+                    orb.PositionY = center.Y + (ny * minDistance);
+
+                    var inward = (orb.VelocityX * nx) + (orb.VelocityY * ny);
+                    if (inward < 0d)
+                    {
+                        orb.VelocityX -= inward * 1.6d * nx;
+                        orb.VelocityY -= inward * 1.6d * ny;
+                    }
+                }
+
+                orb.Shape.Width = size;
+                orb.Shape.Height = size;
+                Canvas.SetLeft(orb.Shape, orb.PositionX - half);
+                Canvas.SetTop(orb.Shape, orb.PositionY - half);
+
+                var hue = (orb.HueOffset + (_waveOrbClockSeconds * 27d) + (Math.Abs(orb.VelocityX) * 0.5d)) % 360d;
+                var coreColor = HsvToColor((hue + 16d) % 360d, 0.28d, 1d);
+                var midColor = HsvToColor(hue, 0.74d, 0.97d);
+                var glowStrength = Math.Clamp(0.70d + (pulse * 0.22d) + (amplitude * 0.16d), 0d, 1d);
+
+                orb.CoreStop.Color = Color.FromArgb((byte)(178 + (56d * glowStrength)), coreColor.R, coreColor.G, coreColor.B);
+                orb.MidStop.Color = Color.FromArgb((byte)(116 + (88d * glowStrength)), midColor.R, midColor.G, midColor.B);
+                orb.OuterStop.Color = Color.FromArgb(0, midColor.R, midColor.G, midColor.B);
+                orb.Shape.Opacity = Math.Clamp(0.58d + (pulse * 0.18d) + (amplitude * 0.10d), 0.56d, 0.90d);
+            }
+        }
+
+        private void PlaceOrbOutsideWave(WaveOrbState orb, Point center, double safeRadius, double width, double height)
+        {
+            if (width <= 1d || height <= 1d)
+            {
+                orb.PositionX = Math.Max(0.5d, width * 0.5d);
+                orb.PositionY = Math.Max(0.5d, height * 0.5d);
+                orb.WanderTimer = 0d;
+                return;
+            }
+
+            var margin = 8d;
+            var minDistance = safeRadius + orb.BaseSizePx;
+            for (var attempt = 0; attempt < 20; attempt++)
+            {
+                var x = margin + (_waveOrbRandom.NextDouble() * Math.Max(1d, width - (margin * 2d)));
+                var y = margin + (_waveOrbRandom.NextDouble() * Math.Max(1d, height - (margin * 2d)));
+                var dx = x - center.X;
+                var dy = y - center.Y;
+                if ((dx * dx) + (dy * dy) >= (minDistance * minDistance))
+                {
+                    orb.PositionX = x;
+                    orb.PositionY = y;
+                    orb.WanderTimer = 0d;
+                    return;
+                }
+            }
+
+            var angle = _waveOrbRandom.NextDouble() * Math.PI * 2d;
+            var radius = Math.Min(
+                Math.Max(minDistance + 8d, 10d),
+                Math.Max(10d, (Math.Min(width, height) * 0.5d) - 10d));
+            var fallbackX = center.X + (Math.Cos(angle) * radius);
+            var fallbackY = center.Y + (Math.Sin(angle) * radius);
+            orb.PositionX = Math.Clamp(fallbackX, margin, width - margin);
+            orb.PositionY = Math.Clamp(fallbackY, margin, height - margin);
+            orb.WanderTimer = 0d;
+        }
+
+        private static Color HsvToColor(double hue, double saturation, double value)
+        {
+            hue %= 360d;
+            if (hue < 0d)
+            {
+                hue += 360d;
+            }
+
+            saturation = Math.Clamp(saturation, 0d, 1d);
+            value = Math.Clamp(value, 0d, 1d);
+            if (saturation <= 0d)
+            {
+                var gray = (byte)Math.Round(value * 255d);
+                return Color.FromRgb(gray, gray, gray);
+            }
+
+            var chroma = value * saturation;
+            var hueSector = hue / 60d;
+            var x = chroma * (1d - Math.Abs((hueSector % 2d) - 1d));
+            var match = value - chroma;
+            double r1;
+            double g1;
+            double b1;
+            if (hueSector < 1d)
+            {
+                r1 = chroma; g1 = x; b1 = 0d;
+            }
+            else if (hueSector < 2d)
+            {
+                r1 = x; g1 = chroma; b1 = 0d;
+            }
+            else if (hueSector < 3d)
+            {
+                r1 = 0d; g1 = chroma; b1 = x;
+            }
+            else if (hueSector < 4d)
+            {
+                r1 = 0d; g1 = x; b1 = chroma;
+            }
+            else if (hueSector < 5d)
+            {
+                r1 = x; g1 = 0d; b1 = chroma;
+            }
+            else
+            {
+                r1 = chroma; g1 = 0d; b1 = x;
+            }
+
+            var r = (byte)Math.Round((r1 + match) * 255d);
+            var g = (byte)Math.Round((g1 + match) * 255d);
+            var b = (byte)Math.Round((b1 + match) * 255d);
+            return Color.FromRgb(r, g, b);
+        }
+
+        private static Geometry BuildCircularSpectrumGeometry(double width, double height, Point center, double baseRadius, IReadOnlyList<double> lengths)
+        {
+            if (width <= 1d || height <= 1d || baseRadius <= 1d || lengths.Count < 12)
             {
                 return Geometry.Empty;
             }
 
-            var barCount = heights.Count;
-            var gap = SpectrumBarGap;
-            var barWidth = (width - ((barCount - 1) * gap)) / barCount;
-            if (barWidth < 0.6d)
+            var barCount = lengths.Count;
+            var maxOuterRadius = (Math.Min(width, height) * 0.5d) - 2d;
+            if (maxOuterRadius <= baseRadius)
             {
-                barWidth = 0.6d;
-                gap = barCount > 1 ? Math.Max(0d, (width - (barCount * barWidth)) / (barCount - 1)) : 0d;
+                return Geometry.Empty;
+            }
+
+            var angleStep = (Math.PI * 2d) / barCount;
+            var halfSweep = angleStep * (0.5d - (CircularBarGapRatio * 0.5d));
+            if (halfSweep < angleStep * 0.06d)
+            {
+                halfSweep = angleStep * 0.06d;
             }
 
             var geometry = new StreamGeometry { FillRule = FillRule.Nonzero };
             using (var context = geometry.Open())
             {
-                var x = 0d;
                 for (var i = 0; i < barCount; i++)
                 {
-                    var barHeight = heights[i];
-                    if (barHeight > 1d)
+                    var length = lengths[i];
+                    if (length > 0.05d)
                     {
-                        var top = Math.Max(0d, baselineY - barHeight);
-                        var right = Math.Min(width, x + barWidth);
-                        if (right > x)
+                        var angle = (-Math.PI / 2d) + (i * angleStep);
+                        var leftAngle = angle - halfSweep;
+                        var rightAngle = angle + halfSweep;
+                        var innerRadius = Math.Max(2d, baseRadius - (length * CircularInwardRatio));
+                        var outerRadius = Math.Min(maxOuterRadius, baseRadius + length);
+                        if (outerRadius > innerRadius + 0.2d)
                         {
-                            context.BeginFigure(new Point(x, top), true, true);
-                            context.LineTo(new Point(right, top), true, false);
-                            context.LineTo(new Point(right, baselineY), true, false);
-                            context.LineTo(new Point(x, baselineY), true, false);
-                        }
-                    }
+                            var p1 = PolarPoint(center, innerRadius, leftAngle);
+                            var p2 = PolarPoint(center, outerRadius, leftAngle);
+                            var p3 = PolarPoint(center, outerRadius, rightAngle);
+                            var p4 = PolarPoint(center, innerRadius, rightAngle);
 
-                    x += barWidth + gap;
-                    if (x > width)
-                    {
-                        break;
+                            context.BeginFigure(p1, true, true);
+                            context.LineTo(p2, true, false);
+                            context.LineTo(p3, true, false);
+                            context.LineTo(p4, true, false);
+                        }
                     }
                 }
             }
 
             geometry.Freeze();
             return geometry;
+        }
+
+        private static Point PolarPoint(Point center, double radius, double angle)
+        {
+            return new Point(
+                center.X + (Math.Cos(angle) * radius),
+                center.Y + (Math.Sin(angle) * radius));
         }
 
         private double GetProbeAlignedTimeMs(double mediaTimeMs)
@@ -768,6 +1274,8 @@ namespace MDJMediaPlayer
             {
                 var probeTimeMs = Math.Max(0d, _waveProbePlayer.Time);
                 var observedOffset = mediaElement.Position.TotalMilliseconds - probeTimeMs;
+                // Ignore extreme outliers so a single timing blip does not push visuals ahead.
+                observedOffset = Math.Clamp(observedOffset, -220d, 1500d);
                 if (!_waveProbeOffsetInitialized)
                 {
                     _waveProbeToMediaOffsetMs = observedOffset;
@@ -778,7 +1286,14 @@ namespace MDJMediaPlayer
                     _waveProbeToMediaOffsetMs = (_waveProbeToMediaOffsetMs * 0.4d) + (observedOffset * 0.6d);
                 }
 
-                return Math.Max(0d, mediaTimeMs - _waveProbeToMediaOffsetMs);
+                var alignedTimeMs = mediaTimeMs - _waveProbeToMediaOffsetMs;
+                // Never sample a probe time newer than the compensated media clock.
+                if (alignedTimeMs > mediaTimeMs)
+                {
+                    alignedTimeMs = mediaTimeMs;
+                }
+
+                return Math.Max(0d, alignedTimeMs);
             }
             catch
             {
@@ -1180,59 +1695,89 @@ namespace MDJMediaPlayer
             }
         }
 
-        private (double[] values, double[] times) GetRecentAudioSamplesWithTimes(int requestedCount)
+        private int CopyRecentAudioSamplesWithTimes(int requestedCount, double[] valueBuffer, double[] timeBuffer)
         {
-            if (requestedCount <= 0)
+            if (requestedCount <= 0 || valueBuffer.Length == 0 || timeBuffer.Length == 0)
             {
-                return (Array.Empty<double>(), Array.Empty<double>());
+                return 0;
             }
+
+            var capacity = Math.Min(valueBuffer.Length, timeBuffer.Length);
+            var desiredCount = Math.Min(requestedCount, capacity);
 
             lock (_audioEnergyLock)
             {
                 var available = _audioSampleFilled ? AudioSampleHistorySize : _audioSampleWriteIndex;
                 if (available <= 0)
                 {
-                    return (Array.Empty<double>(), Array.Empty<double>());
+                    return 0;
                 }
 
-                var count = Math.Min(requestedCount, available);
-                var values = new double[count];
-                var times = new double[count];
+                var count = Math.Min(desiredCount, available);
                 var start = (_audioSampleWriteIndex - count + AudioSampleHistorySize) % AudioSampleHistorySize;
                 for (var i = 0; i < count; i++)
                 {
                     var index = (start + i) % AudioSampleHistorySize;
-                    values[i] = _audioSampleHistory[index];
-                    times[i] = _audioSampleTimeHistory[index];
+                    valueBuffer[i] = _audioSampleHistory[index];
+                    timeBuffer[i] = _audioSampleTimeHistory[index];
                 }
 
-                return (values, times);
+                return count;
             }
         }
 
-        private static double SampleAmplitudeNearTime(double[] values, double[] times, double targetTimeMs, double windowMs)
+        private static double SampleAmplitudeNearTime(ReadOnlySpan<double> values, ReadOnlySpan<double> times, double targetTimeMs, double windowMs)
         {
-            if (values.Length == 0 || times.Length == 0 || values.Length != times.Length)
+            var count = Math.Min(values.Length, times.Length);
+            if (count == 0)
             {
                 return -1d;
             }
 
-            var peakInWindow = 0d;
             var nearestAbs = 0d;
             var nearestDelta = double.MaxValue;
+            var peakInWindow = 0d;
 
-            for (var i = 0; i < values.Length; i++)
+            var low = 0;
+            var high = count - 1;
+            while (low <= high)
             {
-                var dt = Math.Abs(times[i] - targetTimeMs);
-                if (dt < nearestDelta)
+                var mid = low + ((high - low) / 2);
+                if (times[mid] < targetTimeMs)
                 {
-                    nearestDelta = dt;
-                    nearestAbs = Math.Abs(values[i]);
+                    low = mid + 1;
                 }
-
-                if (dt > windowMs)
+                else
                 {
-                    continue;
+                    high = mid - 1;
+                }
+            }
+
+            var left = low - 1;
+            var right = low;
+
+            if (left >= 0)
+            {
+                nearestDelta = Math.Abs(times[left] - targetTimeMs);
+                nearestAbs = Math.Abs(values[left]);
+            }
+
+            if (right < count)
+            {
+                var rightDelta = Math.Abs(times[right] - targetTimeMs);
+                if (rightDelta < nearestDelta)
+                {
+                    nearestDelta = rightDelta;
+                    nearestAbs = Math.Abs(values[right]);
+                }
+            }
+
+            for (var i = left; i >= 0; i--)
+            {
+                var delta = targetTimeMs - times[i];
+                if (delta > windowMs)
+                {
+                    break;
                 }
 
                 var abs = Math.Abs(values[i]);
@@ -1242,8 +1787,90 @@ namespace MDJMediaPlayer
                 }
             }
 
-            if (peakInWindow > 0d) return peakInWindow;
+            for (var i = right; i < count; i++)
+            {
+                var delta = times[i] - targetTimeMs;
+                if (delta > windowMs)
+                {
+                    break;
+                }
+
+                var abs = Math.Abs(values[i]);
+                if (abs > peakInWindow)
+                {
+                    peakInWindow = abs;
+                }
+            }
+
+            if (peakInWindow > 0d)
+            {
+                return peakInWindow;
+            }
+
             return nearestAbs;
+        }
+
+        private static double SampleRmsNearTime(ReadOnlySpan<double> values, ReadOnlySpan<double> times, double targetTimeMs, double windowMs)
+        {
+            var count = Math.Min(values.Length, times.Length);
+            if (count == 0 || windowMs <= 0d)
+            {
+                return -1d;
+            }
+
+            var low = 0;
+            var high = count - 1;
+            while (low <= high)
+            {
+                var mid = low + ((high - low) / 2);
+                if (times[mid] < targetTimeMs)
+                {
+                    low = mid + 1;
+                }
+                else
+                {
+                    high = mid - 1;
+                }
+            }
+
+            var left = low - 1;
+            var right = low;
+            var sum = 0d;
+            var hit = 0;
+
+            for (var i = left; i >= 0; i--)
+            {
+                var delta = targetTimeMs - times[i];
+                if (delta > windowMs)
+                {
+                    break;
+                }
+
+                var sample = values[i];
+                sum += sample * sample;
+                hit++;
+            }
+
+            for (var i = right; i < count; i++)
+            {
+                var delta = times[i] - targetTimeMs;
+                if (delta > windowMs)
+                {
+                    break;
+                }
+
+                var sample = values[i];
+                sum += sample * sample;
+                hit++;
+            }
+
+            if (hit == 0)
+            {
+                return -1d;
+            }
+
+            var rms = Math.Sqrt(sum / hit);
+            return Math.Clamp(rms * 2.9d, 0d, 1d);
         }
 
         private void ResetAudioEnergyHistory()
@@ -1337,6 +1964,16 @@ namespace MDJMediaPlayer
                     }
 
                     // Keep timeline alignment through sampled offset, avoid periodic hard re-seeks.
+                }
+
+                if (ViewModel.IsPlaying && _isCurrentTrackAudioOnly && ViewModel.Selected != null)
+                {
+                    var nowUtc = DateTime.UtcNow;
+                    if ((nowUtc - _lastWaveProbeSoftSyncUtc).TotalMilliseconds >= WaveProbeSoftSyncIntervalMs)
+                    {
+                        _lastWaveProbeSoftSyncUtc = nowUtc;
+                        SyncWaveProbePosition(force: false);
+                    }
                 }
             }
             catch { }
@@ -1536,7 +2173,7 @@ namespace MDJMediaPlayer
                     _extendedModeWindow.Closed += ExtendedModeWindow_Closed;
                 }
 
-                MoveMediaElementToHost(_extendedModeWindow.HostPanel);
+                MovePlaybackVisualsToHost(_extendedModeWindow.HostPanel);
                 _extendedModeWindow.Show();
                 _extendedModeWindow.Activate();
                 _isExtendedMode = true;
@@ -1553,7 +2190,7 @@ namespace MDJMediaPlayer
         {
             try
             {
-                MoveMediaElementToHost(MediaHost);
+                MovePlaybackVisualsToHost(MediaHost);
 
                 if (_extendedModeWindow != null)
                 {
@@ -1574,26 +2211,73 @@ namespace MDJMediaPlayer
 
         private void ExtendedModeWindow_Closed(object? sender, EventArgs e)
         {
-            MoveMediaElementToHost(MediaHost);
+            MovePlaybackVisualsToHost(MediaHost);
             _extendedModeWindow = null;
             _isExtendedMode = false;
             ExtendedModeButton.Content = "Extended Mode";
             ExtendedModeStatusLabel.Visibility = Visibility.Collapsed;
         }
 
-        private void MoveMediaElementToHost(Panel targetHost)
+        private void MovePlaybackVisualsToHost(Panel targetHost)
         {
-            if (mediaElement.Parent == targetHost)
+            if (targetHost == null)
             {
                 return;
             }
 
-            if (mediaElement.Parent is Panel currentParent)
+            MoveElementToPanel(mediaElement, targetHost);
+
+            if (ReferenceEquals(targetHost, MediaHost))
             {
-                currentParent.Children.Remove(mediaElement);
+                MoveAudioWaveOverlayHome();
+            }
+            else
+            {
+                MoveElementToPanel(AudioWaveOverlay, targetHost);
+            }
+        }
+
+        private static void MoveElementToPanel(FrameworkElement element, Panel targetHost)
+        {
+            if (element.Parent == targetHost)
+            {
+                return;
             }
 
-            targetHost.Children.Add(mediaElement);
+            if (element.Parent is Panel currentParent)
+            {
+                currentParent.Children.Remove(element);
+            }
+
+            targetHost.Children.Add(element);
+        }
+
+        private void MoveAudioWaveOverlayHome()
+        {
+            if (_audioWaveOverlayHomeParent == null)
+            {
+                return;
+            }
+
+            if (AudioWaveOverlay.Parent == _audioWaveOverlayHomeParent)
+            {
+                return;
+            }
+
+            if (AudioWaveOverlay.Parent is Panel currentParent)
+            {
+                currentParent.Children.Remove(AudioWaveOverlay);
+            }
+
+            var insertIndex = _audioWaveOverlayHomeIndex;
+            if (insertIndex < 0 || insertIndex > _audioWaveOverlayHomeParent.Children.Count)
+            {
+                _audioWaveOverlayHomeParent.Children.Add(AudioWaveOverlay);
+            }
+            else
+            {
+                _audioWaveOverlayHomeParent.Children.Insert(insertIndex, AudioWaveOverlay);
+            }
         }
     }
 }

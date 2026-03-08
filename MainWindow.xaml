@@ -10,6 +10,43 @@
         MouseDown="Window_MouseDown"
         MouseMove="Window_MouseMove"
         MouseLeave="Window_MouseLeave">
+    <Window.Resources>
+        <LinearGradientBrush x:Key="AudioWaveRainbowBrush"
+                             StartPoint="0.00,0.12"
+                             EndPoint="1.00,0.88">
+            <GradientStop Color="#FFFF3B30" Offset="0.00" />
+            <GradientStop Color="#FFFF9500" Offset="0.14" />
+            <GradientStop Color="#FFFFD60A" Offset="0.28" />
+            <GradientStop Color="#FF32D74B" Offset="0.42" />
+            <GradientStop Color="#FF64D2FF" Offset="0.56" />
+            <GradientStop Color="#FF0A84FF" Offset="0.72" />
+            <GradientStop Color="#FFBF5AF2" Offset="0.86" />
+            <GradientStop Color="#FFFF2D55" Offset="1.00" />
+        </LinearGradientBrush>
+        <LinearGradientBrush x:Key="AudioWaveRainbowBrushSoft"
+                             StartPoint="0.00,0.12"
+                             EndPoint="1.00,0.88">
+            <GradientStop Color="#AAFF3B30" Offset="0.00" />
+            <GradientStop Color="#AAFF9500" Offset="0.14" />
+            <GradientStop Color="#AAFFD60A" Offset="0.28" />
+            <GradientStop Color="#AA32D74B" Offset="0.42" />
+            <GradientStop Color="#AA64D2FF" Offset="0.56" />
+            <GradientStop Color="#AA0A84FF" Offset="0.72" />
+            <GradientStop Color="#AABF5AF2" Offset="0.86" />
+            <GradientStop Color="#AAFF2D55" Offset="1.00" />
+        </LinearGradientBrush>
+        <LinearGradientBrush x:Key="AudioWaveRainbowRingBrush"
+                             StartPoint="0.12,0.00"
+                             EndPoint="0.88,1.00">
+            <GradientStop Color="#FFFD5E53" Offset="0.00" />
+            <GradientStop Color="#FFFFA833" Offset="0.17" />
+            <GradientStop Color="#FFFFF275" Offset="0.33" />
+            <GradientStop Color="#FF6AFF88" Offset="0.50" />
+            <GradientStop Color="#FF7CE7FF" Offset="0.67" />
+            <GradientStop Color="#FF6D8CFF" Offset="0.83" />
+            <GradientStop Color="#FFC17CFF" Offset="1.00" />
+        </LinearGradientBrush>
+    </Window.Resources>
 
     <Window.DataContext>
         <vm:MainViewModel />
@@ -60,31 +97,57 @@
 
                 <Grid x:Name="AudioWaveOverlay"
                       HorizontalAlignment="Stretch"
-                      VerticalAlignment="Center"
-                      Margin="8,0"
-                      Height="160"
+                      VerticalAlignment="Stretch"
+                      Margin="16"
                       IsHitTestVisible="False"
                       Visibility="Collapsed">
-                    <Path x:Name="AudioWavePath"
-                          StrokeThickness="0"
-                          SnapsToDevicePixels="True">
-                        <Path.Fill>
-                            <LinearGradientBrush StartPoint="0,0.5" EndPoint="1,0.5">
-                                <GradientStop Color="#FFD40000" Offset="0.00" />
-                                <GradientStop Color="#FFFF5A00" Offset="0.14" />
-                                <GradientStop Color="#FFFFD000" Offset="0.30" />
-                                <GradientStop Color="#FF8FC300" Offset="0.48" />
-                                <GradientStop Color="#FF00A53A" Offset="0.62" />
-                                <GradientStop Color="#FF008C8C" Offset="0.76" />
-                                <GradientStop Color="#FF0078D7" Offset="0.90" />
-                                <GradientStop Color="#FF2D3CFF" Offset="1.00" />
-                            </LinearGradientBrush>
-                        </Path.Fill>
-                    </Path>
-                    <Rectangle Height="2"
-                               VerticalAlignment="Bottom"
-                               Margin="0,0,0,2"
-                               Fill="#55343A43" />
+                    <Canvas x:Name="AudioWaveOrbCanvas"
+                            HorizontalAlignment="Stretch"
+                            VerticalAlignment="Stretch"
+                            IsHitTestVisible="False" />
+                    <Grid x:Name="AudioWaveSpinLayer"
+                          HorizontalAlignment="Stretch"
+                          VerticalAlignment="Stretch"
+                          RenderTransformOrigin="0.5,0.5">
+                        <Grid.RenderTransform>
+                            <RotateTransform x:Name="AudioWaveSpinTransform" Angle="0" />
+                        </Grid.RenderTransform>
+                        <Ellipse x:Name="AudioWaveOuterRing"
+                                 HorizontalAlignment="Center"
+                                 VerticalAlignment="Center"
+                                 Width="280"
+                                 Height="280"
+                                 Stroke="{StaticResource AudioWaveRainbowRingBrush}"
+                                 StrokeThickness="4"
+                                 Opacity="0.95">
+                            <Ellipse.Effect>
+                                <BlurEffect Radius="16" />
+                            </Ellipse.Effect>
+                        </Ellipse>
+                        <Ellipse x:Name="AudioWaveInnerRing"
+                                 HorizontalAlignment="Center"
+                                 VerticalAlignment="Center"
+                                 Width="236"
+                                 Height="236"
+                                 Stroke="{StaticResource AudioWaveRainbowRingBrush}"
+                                 StrokeThickness="2"
+                                 StrokeDashArray="0.4,2.2"
+                                 StrokeDashCap="Round"
+                                 Opacity="0.95" />
+                        <Path Data="{Binding Data, ElementName=AudioWavePath}"
+                              Opacity="0.44"
+                              SnapsToDevicePixels="True"
+                              Fill="{StaticResource AudioWaveRainbowBrushSoft}">
+                            <Path.Effect>
+                                <BlurEffect Radius="8" />
+                            </Path.Effect>
+                        </Path>
+                        <Path x:Name="AudioWavePath"
+                              StrokeThickness="0"
+                              Opacity="0.96"
+                              SnapsToDevicePixels="True"
+                              Fill="{StaticResource AudioWaveRainbowBrush}" />
+                    </Grid>
                 </Grid>
 
                 <!-- "NO VIDEO FOUND" message -->
@@ -120,7 +183,7 @@
                 <!-- Floating control panel at bottom center -->
                 <Border x:Name="ControlPanel" Style="{StaticResource FloatingControlPanel}" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,18" MouseEnter="ControlPanel_MouseEnter" MouseLeave="ControlPanel_MouseLeave">
                     <StackPanel Orientation="Vertical" HorizontalAlignment="Stretch">
-                        <TextBlock Text="(NEW VIDEO ADDED)" Foreground="LimeGreen" HorizontalAlignment="Center" Margin="0,0,0,5" FontSize="14" Visibility="Collapsed">
+                        <TextBlock Text="(New file added)" Foreground="LimeGreen" HorizontalAlignment="Center" Margin="0,0,0,5" FontSize="14" Visibility="Collapsed">
                             <TextBlock.Style>
                                 <Style TargetType="TextBlock">
                                     <Style.Triggers>
