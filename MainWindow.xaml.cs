@@ -6,6 +6,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Effects;
 using System.IO;
+using System.Globalization;
 using System.Collections.Generic;
 using System.Buffers;
 using System.Runtime.InteropServices;
@@ -20,6 +21,7 @@ namespace MDJMediaPlayer
         private MainViewModel ViewModel => (MainViewModel)DataContext!;
         private System.Windows.Threading.DispatcherTimer? _timer;
         private bool _isUserDraggingPosition = false;
+        private bool _suppressPositionSync = false;
         private System.Windows.Threading.DispatcherTimer? _hideControlsTimer;
         private bool _controlsVisible = true;
         private int _controlsAnimationVersion = 0;
@@ -28,6 +30,7 @@ namespace MDJMediaPlayer
         private ExtendedModeWindow? _extendedModeWindow;
         private bool _isExtendedMode = false;
         private SFXWindow? _sfxWindow;
+        private SettingsWindow? _settingsWindow;
         private readonly HashSet<string> _audioExtensions = new(StringComparer.OrdinalIgnoreCase)
         {
             ".aac", ".flac", ".m4a", ".mp3", ".ogg", ".wav", ".wma"
@@ -101,6 +104,7 @@ namespace MDJMediaPlayer
         private double _lastWaveOrbViewportHeight = 0d;
         private Panel? _audioWaveOverlayHomeParent;
         private int _audioWaveOverlayHomeIndex = -1;
+        private bool _isLoadingSettings = false;
         // (No external fallback initialized) - keep MediaElement primary
 
         private sealed class WaveOrbState
@@ -147,7 +151,10 @@ namespace MDJMediaPlayer
             // Auto-hide controls timer
             _hideControlsTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(2000) };
             _hideControlsTimer.Tick += (s, e) => HideControls();
-            _hideControlsTimer.Start();
+            if (ViewModel.AutoHideControls)
+            {
+                _hideControlsTimer.Start();
+            }
 
             // Auto-hide cursor timer
             _hideCursorTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
@@ -160,10 +167,13 @@ namespace MDJMediaPlayer
             mediaElement.MediaFailed += MediaElement_MediaFailed;
             this.StateChanged += MainWindow_StateChanged;
             this.Deactivated += MainWindow_Deactivated;
-            // Ensure theme combo has default selection applied
-            ApplyTheme("Dark");
+            try { LoadPersistedSettings(); } catch { }
+            // Ensure theme has default selection applied
+            ApplyTheme(ViewModel.Theme);
+            UpdateAutoHideBehavior();
 
             try { LoadPersistedMainPlaylist(); } catch { }
+            try { LoadStartupMediaFromArguments(); } catch { }
         }
 
         private void CachePlaybackVisualHomeParents()
@@ -187,21 +197,285 @@ namespace MDJMediaPlayer
         {
             try
             {
-                if (theme == "Light")
+                System.Windows.Media.Color ParseColor(string hex)
                 {
-                    Application.Current.Resources["WindowBackgroundBrush"] = new System.Windows.Media.SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#FFFFFFFF"));
-                    Application.Current.Resources["PanelBackgroundBrush"] = new System.Windows.Media.SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#FFF0F0F0"));
-                    Application.Current.Resources["CardBackgroundBrush"] = new System.Windows.Media.SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#FFFFFFFF"));
-                    Application.Current.Resources["CardAltBackgroundBrush"] = new System.Windows.Media.SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#EEEEEE"));
-                    Application.Current.Resources["PrimaryBrush"] = new System.Windows.Media.SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#0078D7"));
+                    return (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(hex);
                 }
-                else // Dark
+
+                SolidColorBrush MakeSolid(string hex) => new SolidColorBrush(ParseColor(hex));
+
+                SolidColorBrush MakeSolidColor(System.Windows.Media.Color color) => new SolidColorBrush(color);
+
+                LinearGradientBrush MakeVerticalGradient(string topHex, string bottomHex) =>
+                    MakeVerticalGradientColors(ParseColor(topHex), ParseColor(bottomHex));
+
+                LinearGradientBrush MakeVerticalGradientColors(System.Windows.Media.Color top, System.Windows.Media.Color bottom) =>
+                    new LinearGradientBrush(top, bottom, new Point(0, 0), new Point(0, 1));
+
+                LinearGradientBrush MakeVerticalGradientStops(params (System.Windows.Media.Color color, double offset)[] stops)
                 {
-                    Application.Current.Resources["WindowBackgroundBrush"] = new System.Windows.Media.SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#FF0F1115"));
-                    Application.Current.Resources["PanelBackgroundBrush"] = new System.Windows.Media.SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#0F1115"));
-                    Application.Current.Resources["CardBackgroundBrush"] = new System.Windows.Media.SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#141518"));
-                    Application.Current.Resources["CardAltBackgroundBrush"] = new System.Windows.Media.SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#222222"));
-                    Application.Current.Resources["PrimaryBrush"] = new System.Windows.Media.SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#00B4FF"));
+                    var brush = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = new Point(0, 1) };
+                    foreach (var (color, offset) in stops)
+                    {
+                        brush.GradientStops.Add(new GradientStop(color, offset));
+                    }
+                    return brush;
+                }
+
+                void SetGlobalBrush(string key, Brush brush)
+                {
+                    Application.Current.Resources[key] = brush;
+                }
+
+                void SetLocalBrush(string key, Brush brush)
+                {
+                    Resources[key] = brush;
+                }
+
+                void ClearLocalBrush(string key)
+                {
+                    if (Resources.Contains(key))
+                    {
+                        Resources.Remove(key);
+                    }
+                }
+
+                void SetFont(string key, string fontFamily)
+                {
+                    Application.Current.Resources[key] = new FontFamily(fontFamily);
+                }
+
+                var isAeroTheme = string.Equals(theme, "Aero", StringComparison.OrdinalIgnoreCase);
+                var hueShift = Math.Clamp(ViewModel.AeroColorLevel, 0d, 100d) * 3.3d;
+                var transparencyLevel = Math.Clamp(ViewModel.AeroTransparency / 100d, 0d, 1d);
+                var transparencyEnabled = isAeroTheme && transparencyLevel > 0d;
+                var transparencyFactor = 1d;
+                var controlPanelOpacity = 1d;
+                var controlPanelShadowOpacity = 0.55d;
+                var controlPanelHazeOpacity = 0d;
+
+                if (transparencyEnabled)
+                {
+                    transparencyFactor = Math.Clamp(1d - (transparencyLevel * 0.75d), 0.2d, 1d);
+                    controlPanelOpacity = 1d;
+                    controlPanelShadowOpacity = Math.Clamp(0.55d - (transparencyLevel * 0.45d), 0.08d, 0.55d);
+                    var hazeLevel = transparencyLevel;
+                    controlPanelHazeOpacity = Math.Clamp(hazeLevel * 0.7d, 0d, 0.7d);
+                }
+                else
+                {
+                    controlPanelHazeOpacity = 0d;
+                }
+
+                Resources["ControlPanelOpacity"] = controlPanelOpacity;
+                Resources["ControlPanelShadowOpacity"] = controlPanelShadowOpacity;
+                Resources["ControlPanelHazeOpacity"] = controlPanelHazeOpacity;
+
+                void ToHsv(System.Windows.Media.Color color, out double hue, out double saturation, out double value)
+                {
+                    var r = color.R / 255d;
+                    var g = color.G / 255d;
+                    var b = color.B / 255d;
+                    var max = Math.Max(r, Math.Max(g, b));
+                    var min = Math.Min(r, Math.Min(g, b));
+                    var delta = max - min;
+
+                    hue = 0d;
+                    if (delta > 0d)
+                    {
+                        if (max == r)
+                        {
+                            hue = 60d * (((g - b) / delta) % 6d);
+                        }
+                        else if (max == g)
+                        {
+                            hue = 60d * (((b - r) / delta) + 2d);
+                        }
+                        else
+                        {
+                            hue = 60d * (((r - g) / delta) + 4d);
+                        }
+                    }
+                    if (hue < 0d)
+                    {
+                        hue += 360d;
+                    }
+
+                    value = max;
+                    saturation = max <= 0d ? 0d : delta / max;
+                }
+
+                System.Windows.Media.Color FromHsv(byte alpha, double hue, double saturation, double value)
+                {
+                    hue = (hue % 360d + 360d) % 360d;
+                    saturation = Math.Clamp(saturation, 0d, 1d);
+                    value = Math.Clamp(value, 0d, 1d);
+
+                    var c = value * saturation;
+                    var x = c * (1d - Math.Abs(((hue / 60d) % 2d) - 1d));
+                    var m = value - c;
+
+                    double rPrime;
+                    double gPrime;
+                    double bPrime;
+
+                    if (hue < 60d)
+                    {
+                        rPrime = c;
+                        gPrime = x;
+                        bPrime = 0d;
+                    }
+                    else if (hue < 120d)
+                    {
+                        rPrime = x;
+                        gPrime = c;
+                        bPrime = 0d;
+                    }
+                    else if (hue < 180d)
+                    {
+                        rPrime = 0d;
+                        gPrime = c;
+                        bPrime = x;
+                    }
+                    else if (hue < 240d)
+                    {
+                        rPrime = 0d;
+                        gPrime = x;
+                        bPrime = c;
+                    }
+                    else if (hue < 300d)
+                    {
+                        rPrime = x;
+                        gPrime = 0d;
+                        bPrime = c;
+                    }
+                    else
+                    {
+                        rPrime = c;
+                        gPrime = 0d;
+                        bPrime = x;
+                    }
+
+                    var r = (byte)Math.Clamp(Math.Round((rPrime + m) * 255d), 0d, 255d);
+                    var g = (byte)Math.Clamp(Math.Round((gPrime + m) * 255d), 0d, 255d);
+                    var b = (byte)Math.Clamp(Math.Round((bPrime + m) * 255d), 0d, 255d);
+                    return System.Windows.Media.Color.FromArgb(alpha, r, g, b);
+                }
+
+                System.Windows.Media.Color ApplyHueShift(System.Windows.Media.Color color)
+                {
+                    if (!isAeroTheme || Math.Abs(hueShift) < 0.01d)
+                    {
+                        return color;
+                    }
+
+                    ToHsv(color, out var h, out var s, out var v);
+                    var shiftedHue = (h + hueShift) % 360d;
+                    return FromHsv(color.A, shiftedHue, s, v);
+                }
+
+                System.Windows.Media.Color ApplyTransparency(System.Windows.Media.Color color)
+                {
+                    if (!transparencyEnabled)
+                    {
+                        return color;
+                    }
+
+                    var a = (byte)Math.Clamp(color.A * transparencyFactor, 0d, 255d);
+                    return System.Windows.Media.Color.FromArgb(a, color.R, color.G, color.B);
+                }
+
+                System.Windows.Media.Color EnsureOpaque(System.Windows.Media.Color color)
+                {
+                    if (transparencyEnabled || color.A == 255)
+                    {
+                        return color;
+                    }
+
+                    return System.Windows.Media.Color.FromArgb(255, color.R, color.G, color.B);
+                }
+
+                System.Windows.Media.Color AdjustColor(string hex, bool applyTransparency = false)
+                {
+                    var color = ParseColor(hex);
+                    color = ApplyHueShift(color);
+                    color = EnsureOpaque(color);
+                    if (applyTransparency)
+                    {
+                        color = ApplyTransparency(color);
+                    }
+                    return color;
+                }
+
+                System.Windows.Media.Color AdjustColorOpaque(string hex)
+                {
+                    var color = ParseColor(hex);
+                    color = ApplyHueShift(color);
+                    return System.Windows.Media.Color.FromArgb(255, color.R, color.G, color.B);
+                }
+
+                if (string.Equals(theme, "Zune", StringComparison.OrdinalIgnoreCase))
+                {
+                    SetFont("AppFontFamily", "Segoe UI");
+                    SetFont("AppFontFamilyDisplay", "Segoe UI Semibold, Segoe UI");
+
+                    SetGlobalBrush("WindowBackgroundBrush", MakeVerticalGradient("#14171C", "#0B0D11"));
+                    SetGlobalBrush("PanelBackgroundBrush", MakeVerticalGradient("#181C22", "#0E1116"));
+                    SetGlobalBrush("CardBackgroundBrush", MakeVerticalGradientColors(AdjustColor("#1C2128", applyTransparency: true), AdjustColor("#12161C", applyTransparency: true)));
+                    SetGlobalBrush("CardAltBackgroundBrush", MakeVerticalGradientColors(AdjustColor("#222834", applyTransparency: true), AdjustColor("#151A22", applyTransparency: true)));
+                    SetGlobalBrush("PrimaryBrush", MakeSolid("#4AA3FF"));
+
+                    SetGlobalBrush("AeroBorderBrush", MakeSolid("#39424D"));
+                    SetGlobalBrush("AeroBorderDarkBrush", MakeSolid("#2A313A"));
+                    SetGlobalBrush("AeroTextBrush", MakeSolid("#E7EDF5"));
+                    SetGlobalBrush("AeroSubTextBrush", MakeSolid("#B3BDC8"));
+                    SetGlobalBrush("ControlOverlayBrush", MakeSolidColor(AdjustColor("#1F242C", applyTransparency: true)));
+                    SetGlobalBrush("ControlBackgroundBrush", MakeSolidColor(AdjustColor("#20262F", applyTransparency: true)));
+                    SetGlobalBrush("AeroButtonBrush", MakeSolid("#2A3038"));
+                    SetGlobalBrush("AeroButtonHoverBrush", MakeSolid("#343C46"));
+                    SetGlobalBrush("AeroButtonPressedBrush", MakeSolid("#21262D"));
+                    SetGlobalBrush("AeroButtonGlossBrush", MakeSolid("#00FFFFFF"));
+                    SetGlobalBrush("AeroSelectionBrush", MakeSolid("#2C4D6B"));
+                    SetGlobalBrush("AeroItemHoverBrush", MakeSolid("#2B313A"));
+                }
+                else // Aero
+                {
+                    SetFont("AppFontFamily", "Segoe UI");
+                    SetFont("AppFontFamilyDisplay", "Segoe UI Semibold, Segoe UI");
+
+                    SetGlobalBrush("WindowBackgroundBrush", MakeVerticalGradientColors(AdjustColor("#263956"), AdjustColor("#101722")));
+                    SetGlobalBrush("PanelBackgroundBrush", MakeVerticalGradientColors(AdjustColor("#2B4162"), AdjustColor("#111A27")));
+                    SetGlobalBrush("CardBackgroundBrush", MakeVerticalGradientColors(AdjustColorOpaque("#304A6D"), AdjustColorOpaque("#162335")));
+                    SetGlobalBrush("CardAltBackgroundBrush", MakeVerticalGradientColors(AdjustColorOpaque("#3A5A81"), AdjustColorOpaque("#1B2C43")));
+                    SetGlobalBrush("PrimaryBrush", MakeSolidColor(AdjustColor("#4EC1FF")));
+
+                    SetGlobalBrush("AeroBorderBrush", MakeSolidColor(AdjustColor("#7FB6E8")));
+                    SetGlobalBrush("AeroBorderDarkBrush", MakeSolidColor(AdjustColor("#3E5C78")));
+                    SetGlobalBrush("AeroTextBrush", MakeSolidColor(ParseColor("#F4FAFF")));
+                    SetGlobalBrush("AeroSubTextBrush", MakeSolidColor(ParseColor("#D7E8F7")));
+                    SetGlobalBrush("ControlOverlayBrush", MakeVerticalGradientStops((AdjustColorOpaque("#6B4C6A89"), 0.0), (AdjustColorOpaque("#5E3D536D"), 0.52), (AdjustColorOpaque("#4A25364C"), 1.0)));
+                    SetGlobalBrush("ControlBackgroundBrush", MakeVerticalGradientStops((AdjustColorOpaque("#6E506D8E"), 0.0), (AdjustColorOpaque("#5A39506A"), 1.0)));
+                    SetGlobalBrush("AeroButtonBrush", MakeVerticalGradientStops((AdjustColor("#3A5D86"), 0.0), (AdjustColor("#1E2F45"), 1.0)));
+                    SetGlobalBrush("AeroButtonHoverBrush", MakeVerticalGradientStops((AdjustColor("#4E78A8"), 0.0), (AdjustColor("#24405C"), 1.0)));
+                    SetGlobalBrush("AeroButtonPressedBrush", MakeVerticalGradientStops((AdjustColor("#1B2B3F"), 0.0), (AdjustColor("#142233"), 1.0)));
+                    SetGlobalBrush("AeroButtonGlossBrush", MakeVerticalGradientStops((AdjustColorOpaque("#66FFFFFF"), 0.0), (AdjustColorOpaque("#22FFFFFF"), 0.45), (AdjustColorOpaque("#00FFFFFF"), 1.0)));
+                    SetGlobalBrush("AeroSelectionBrush", MakeVerticalGradientStops((AdjustColor("#6BAED9"), 0.0), (AdjustColor("#34618C"), 1.0)));
+                    SetGlobalBrush("AeroItemHoverBrush", MakeVerticalGradientStops((AdjustColor("#3D5F82"), 0.0), (AdjustColor("#2A3F57"), 1.0)));
+                }
+
+                ClearLocalBrush("CardBackgroundBrush");
+                ClearLocalBrush("CardAltBackgroundBrush");
+                ClearLocalBrush("ControlOverlayBrush");
+                ClearLocalBrush("ControlBackgroundBrush");
+                ClearLocalBrush("AeroButtonGlossBrush");
+
+                if (isAeroTheme && transparencyEnabled)
+                {
+                    SetLocalBrush("CardBackgroundBrush", MakeVerticalGradientColors(AdjustColor("#304A6D", applyTransparency: true), AdjustColor("#162335", applyTransparency: true)));
+                    SetLocalBrush("CardAltBackgroundBrush", MakeVerticalGradientColors(AdjustColor("#3A5A81", applyTransparency: true), AdjustColor("#1B2C43", applyTransparency: true)));
+                    SetLocalBrush("ControlOverlayBrush", MakeVerticalGradientStops((AdjustColor("#6B4C6A89", applyTransparency: true), 0.0), (AdjustColor("#5E3D536D", applyTransparency: true), 0.52), (AdjustColor("#4A25364C", applyTransparency: true), 1.0)));
+                    SetLocalBrush("ControlBackgroundBrush", MakeVerticalGradientStops((AdjustColor("#6E506D8E", applyTransparency: true), 0.0), (AdjustColor("#5A39506A", applyTransparency: true), 1.0)));
+                    SetLocalBrush("AeroButtonGlossBrush", MakeVerticalGradientStops((AdjustColor("#66FFFFFF", applyTransparency: true), 0.0), (AdjustColor("#22FFFFFF", applyTransparency: true), 0.45), (AdjustColor("#00FFFFFF", applyTransparency: true), 1.0)));
                 }
             }
             catch { }
@@ -231,27 +505,40 @@ namespace MDJMediaPlayer
             this.Close();
         }
 
-        private void AboutButton_Click(object sender, RoutedEventArgs e)
+        private void SettingsButton_Click(object sender, RoutedEventArgs e)
         {
-            try
+            if (_settingsWindow == null)
             {
-                var asm = System.Reflection.Assembly.GetEntryAssembly() ?? System.Reflection.Assembly.GetExecutingAssembly();
-                var name = asm.GetName().Name ?? "MDJ Media Player";
-                var version = "1.3.0";
-                var msg = $"{name}\nVersion: {version}\n\nA simple WPF media player.";
-                MessageBox.Show(msg, "About", MessageBoxButton.OK, MessageBoxImage.Information);
+                _settingsWindow = new SettingsWindow
+                {
+                    Owner = this,
+                    DataContext = DataContext,
+                    ShowInTaskbar = false
+                };
+                _settingsWindow.Closed += (_, _) => _settingsWindow = null;
             }
-            catch
+
+            if (!_settingsWindow.IsVisible)
             {
-                MessageBox.Show("MDJ Media Player\nVersion: unknown", "About", MessageBoxButton.OK, MessageBoxImage.Information);
+                _settingsWindow.Show();
             }
+
+            if (_settingsWindow.WindowState == WindowState.Minimized)
+            {
+                _settingsWindow.WindowState = WindowState.Normal;
+            }
+
+            _settingsWindow.Activate();
         }
 
         private void SFXButton_Click(object sender, RoutedEventArgs e)
         {
             if (_sfxWindow == null)
             {
-                _sfxWindow = new SFXWindow();
+                _sfxWindow = new SFXWindow
+                {
+                    ShowInTaskbar = false
+                };
                 _sfxWindow.Owner = this;
             }
             if (_sfxWindow.IsPlaying)
@@ -275,9 +562,11 @@ namespace MDJMediaPlayer
             try { _audioWaveTimer?.Stop(); } catch { }
             try { StopWaveProbe(); } catch { }
             try { DisposeWaveProbe(); } catch { }
+            try { SavePersistedSettings(); } catch { }
             try { SavePersistedMainPlaylist(); } catch { }
             try { _sfxWindow?.SavePersisted(); } catch { }
             try { _sfxWindow?.ForceClose(); } catch { }
+            try { _settingsWindow?.Close(); } catch { }
             try { _extendedModeWindow?.Close(); } catch { }
             try
             {
@@ -306,6 +595,8 @@ namespace MDJMediaPlayer
         private void FilesListButton_Click(object sender, RoutedEventArgs e)
         {
             var filesListWindow = new FilesListWindow(ViewModel);
+            filesListWindow.Owner = this;
+            filesListWindow.ShowInTaskbar = false;
             filesListWindow.Show();
         }
 
@@ -337,6 +628,229 @@ namespace MDJMediaPlayer
             return Path.Combine(GetAppDataDir(), "video-playlist.m3u");
         }
 
+        private static string GetSettingsPath()
+        {
+            return Path.Combine(GetAppDataDir(), "settings.ini");
+        }
+
+        private void LoadPersistedSettings()
+        {
+            var path = GetSettingsPath();
+            if (!File.Exists(path)) return;
+
+            _isLoadingSettings = true;
+            try
+            {
+                foreach (var raw in File.ReadLines(path))
+                {
+                    var line = raw.Trim();
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+                    if (line.StartsWith("#", StringComparison.Ordinal)) continue;
+
+                    var splitIndex = line.IndexOf('=');
+                    if (splitIndex <= 0) continue;
+
+                    var key = line.Substring(0, splitIndex).Trim();
+                    var value = line.Substring(splitIndex + 1).Trim();
+
+                    if (string.Equals(key, "Theme", StringComparison.OrdinalIgnoreCase))
+                    {
+                        ViewModel.Theme = value;
+                        continue;
+                    }
+
+                    if (string.Equals(key, "LoopMedia", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (bool.TryParse(value, out var loopMedia))
+                        {
+                            ViewModel.LoopMedia = loopMedia;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "AutoplayMedia", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (bool.TryParse(value, out var autoplayMedia))
+                        {
+                            ViewModel.AutoplayMedia = autoplayMedia;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "AutoNext", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (bool.TryParse(value, out var autoNext))
+                        {
+                            ViewModel.AutoNext = autoNext;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "LoopPlaylist", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (bool.TryParse(value, out var loopPlaylist))
+                        {
+                            ViewModel.LoopPlaylist = loopPlaylist;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "AutoHideControls", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (bool.TryParse(value, out var autoHideControls))
+                        {
+                            ViewModel.AutoHideControls = autoHideControls;
+                        }
+                        continue;
+                    }
+
+
+                    if (string.Equals(key, "AeroColorLevel", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var colorLevel))
+                        {
+                            ViewModel.AeroColorLevel = colorLevel;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "AeroTransparency", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var transparency))
+                        {
+                            ViewModel.AeroTransparency = transparency;
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                _isLoadingSettings = false;
+            }
+        }
+
+        private void SavePersistedSettings()
+        {
+            var path = GetSettingsPath();
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            using var writer = new StreamWriter(path, false);
+            writer.WriteLine("# MDJ Media Player settings");
+            writer.WriteLine("Theme=" + ViewModel.Theme);
+            writer.WriteLine("LoopMedia=" + ViewModel.LoopMedia);
+            writer.WriteLine("AutoplayMedia=" + ViewModel.AutoplayMedia);
+            writer.WriteLine("AutoNext=" + ViewModel.AutoNext);
+            writer.WriteLine("LoopPlaylist=" + ViewModel.LoopPlaylist);
+            writer.WriteLine("AutoHideControls=" + ViewModel.AutoHideControls);
+            writer.WriteLine("AeroColorLevel=" + ViewModel.AeroColorLevel.ToString(CultureInfo.InvariantCulture));
+            writer.WriteLine("AeroTransparency=" + ViewModel.AeroTransparency.ToString(CultureInfo.InvariantCulture));
+        }
+
+        private void LoadStartupMediaFromArguments()
+        {
+            var args = Environment.GetCommandLineArgs();
+            if (args.Length <= 1)
+            {
+                return;
+            }
+
+            var firstTarget = AddMediaFilesFromArguments(args, 1);
+            if (firstTarget == null)
+            {
+                return;
+            }
+
+            if (ViewModel.AutoplayMedia)
+            {
+                ViewModel.Position = 0;
+                ViewModel.Selected = firstTarget;
+                ViewModel.IsPlaying = true;
+            }
+        }
+
+        private Models.MediaItem? AddMediaFilesFromArguments(string[] args, int startIndex)
+        {
+            Models.MediaItem? firstItem = null;
+
+            for (var i = startIndex; i < args.Length; i++)
+            {
+                var filePath = NormalizeArgumentAsFilePath(args[i]);
+                if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+                {
+                    continue;
+                }
+
+                var existingItem = FindPlaylistItemByPath(filePath);
+                if (existingItem != null)
+                {
+                    firstItem ??= existingItem;
+                    continue;
+                }
+
+                var item = new Models.MediaItem
+                {
+                    FilePath = filePath,
+                    Title = Path.GetFileName(filePath)
+                };
+
+                ViewModel.Playlist.Add(item);
+                firstItem ??= item;
+            }
+
+            return firstItem;
+        }
+
+        private Models.MediaItem? FindPlaylistItemByPath(string filePath)
+        {
+            foreach (var item in ViewModel.Playlist)
+            {
+                if (string.Equals(item.FilePath, filePath, StringComparison.OrdinalIgnoreCase))
+                {
+                    return item;
+                }
+            }
+
+            return null;
+        }
+
+        private static string? NormalizeArgumentAsFilePath(string rawArg)
+        {
+            if (string.IsNullOrWhiteSpace(rawArg))
+            {
+                return null;
+            }
+
+            var candidate = rawArg.Trim().Trim('"');
+            if (string.IsNullOrWhiteSpace(candidate))
+            {
+                return null;
+            }
+
+            // Ignore startup switches or activation flags passed by shell integrations.
+            if (candidate.StartsWith("-", StringComparison.Ordinal))
+            {
+                return null;
+            }
+
+            if (candidate.StartsWith("/", StringComparison.Ordinal) && !candidate.StartsWith(@"\\", StringComparison.Ordinal))
+            {
+                return null;
+            }
+
+            try
+            {
+                if (!Path.IsPathRooted(candidate))
+                {
+                    candidate = Path.GetFullPath(candidate);
+                }
+            }
+            catch
+            {
+                return null;
+            }
+
+            return candidate;
+        }
+
         private void LoadPersistedMainPlaylist()
         {
             var path = GetVideoPlaylistPath();
@@ -361,7 +875,7 @@ namespace MDJMediaPlayer
                     Title = System.IO.Path.GetFileName(mediaPath)
                 });
             }
-            if (ViewModel.Selected == null && ViewModel.Playlist.Count > 0)
+            if (ViewModel.AutoplayMedia && ViewModel.Selected == null && ViewModel.Playlist.Count > 0)
             {
                 ViewModel.Selected = ViewModel.Playlist[0];
             }
@@ -461,6 +975,10 @@ namespace MDJMediaPlayer
             }
             if (e.PropertyName == nameof(ViewModel.Position))
             {
+                if (_isUserDraggingPosition || _suppressPositionSync)
+                {
+                    return;
+                }
                 try
                 {
                     var pos = TimeSpan.FromSeconds(ViewModel.Position);
@@ -471,6 +989,37 @@ namespace MDJMediaPlayer
                     }
                 }
                 catch { }
+            }
+            if (e.PropertyName == nameof(ViewModel.Theme))
+            {
+                ApplyTheme(ViewModel.Theme);
+                if (!_isLoadingSettings)
+                {
+                    try { SavePersistedSettings(); } catch { }
+                }
+            }
+            if (e.PropertyName == nameof(ViewModel.AeroColorLevel) || e.PropertyName == nameof(ViewModel.AeroTransparency))
+            {
+                ApplyTheme(ViewModel.Theme);
+                if (!_isLoadingSettings)
+                {
+                    try { SavePersistedSettings(); } catch { }
+                }
+            }
+            if (e.PropertyName == nameof(ViewModel.LoopMedia) || e.PropertyName == nameof(ViewModel.AutoplayMedia) || e.PropertyName == nameof(ViewModel.AutoNext) || e.PropertyName == nameof(ViewModel.LoopPlaylist))
+            {
+                if (!_isLoadingSettings)
+                {
+                    try { SavePersistedSettings(); } catch { }
+                }
+            }
+            if (e.PropertyName == nameof(ViewModel.AutoHideControls))
+            {
+                UpdateAutoHideBehavior();
+                if (!_isLoadingSettings)
+                {
+                    try { SavePersistedSettings(); } catch { }
+                }
             }
         }
 
@@ -562,8 +1111,37 @@ namespace MDJMediaPlayer
 
         private void MediaElement_MediaEnded(object? sender, RoutedEventArgs e)
         {
-            // Auto-play next track
-            ViewModel.PlayNext();
+            if (ViewModel.LoopMedia && ViewModel.Selected != null)
+            {
+                try
+                {
+                    ViewModel.Position = 0;
+                    mediaElement.Position = TimeSpan.Zero;
+                    mediaElement.Play();
+                    ViewModel.IsPlaying = true;
+                    SyncWaveProbePosition(true);
+                }
+                catch { }
+                return;
+            }
+
+            if (ViewModel.AutoNext)
+            {
+                // Auto-play next track (wrap when loop playlist is enabled)
+                if (ViewModel.TryPlayNextValid(wrap: ViewModel.LoopPlaylist))
+                {
+                    return;
+                }
+            }
+
+            try
+            {
+                ViewModel.Position = 0;
+                mediaElement.Position = TimeSpan.Zero;
+            }
+            catch { }
+
+            ViewModel.IsPlaying = false;
         }
 
         private void MediaElement_MediaFailed(object? sender, ExceptionRoutedEventArgs e)
@@ -575,6 +1153,11 @@ namespace MDJMediaPlayer
             _audioWaveEnvelope = Array.Empty<double>();
             StopWaveProbe();
             UpdateAudioWaveVisibility();
+
+            if (ViewModel.AutoNext && ViewModel.TryPlayNextValid(wrap: ViewModel.LoopPlaylist))
+            {
+                return;
+            }
 
             // No fallback here; user can install codecs or try another file
         }
@@ -646,32 +1229,23 @@ namespace MDJMediaPlayer
 
         private void RenderAudioWaveFrame()
         {
-            if (AudioWaveOverlay.ActualWidth <= 0 || AudioWaveOverlay.ActualHeight <= 0)
+            if (AudioWaveSpinLayer.ActualWidth <= 0 || AudioWaveSpinLayer.ActualHeight <= 0)
             {
                 return;
             }
 
-            var width = AudioWaveOverlay.ActualWidth;
-            var height = AudioWaveOverlay.ActualHeight;
-            var barCount = _spectrumBarLevels.Length;
-            if (barCount < 12)
-            {
-                AudioWavePath.Data = null;
-                return;
-            }
-
+            var width = AudioWaveSpinLayer.ActualWidth;
+            var height = AudioWaveSpinLayer.ActualHeight;
             var minSide = Math.Min(width, height);
-            var center = new Point(width * 0.5d, height * 0.5d);
-            var ringRadius = Math.Max(42d, minSide * 0.24d);
-            var maxBarHeight = Math.Max(14d, minSide * 0.17d);
-            var outerRingDiameter = Math.Clamp(ringRadius * 2.34d, 140d, Math.Max(140d, minSide - 8d));
-            var innerRingDiameter = Math.Clamp(ringRadius * 1.98d, 110d, Math.Max(110d, outerRingDiameter - (minSide * 0.11d)));
+            var outerRingDiameter = Math.Clamp(minSide * 0.62d, 180d, Math.Max(180d, minSide - 24d));
+            var innerRingDiameter = Math.Clamp(outerRingDiameter * 0.38d, 72d, outerRingDiameter * 0.52d);
 
             AudioWaveOuterRing.Width = outerRingDiameter;
             AudioWaveOuterRing.Height = outerRingDiameter;
             AudioWaveInnerRing.Width = innerRingDiameter;
             AudioWaveInnerRing.Height = innerRingDiameter;
 
+            var barCount = _spectrumBarLevels.Length;
             var sampleCount = CopyRecentAudioSamplesWithTimes(
                 Math.Max(WaveRenderMinSampleCount, barCount * WaveRenderSampleCountFactor),
                 _waveRenderSampleValues,
@@ -712,8 +1286,13 @@ namespace MDJMediaPlayer
                 else
                 {
                     var progress = ViewModel.Duration > 0 ? ViewModel.Position / ViewModel.Duration : 0d;
+                    progress = Math.Clamp(progress, 0d, 1d);
                     var envelopeLength = _audioWaveEnvelope.Length;
                     var index = envelopeLength == 0 ? 0 : (int)(progress * (envelopeLength - 1));
+                    if (envelopeLength > 0)
+                    {
+                        index = Math.Clamp(index, 0, envelopeLength - 1);
+                    }
                     var sample = envelopeLength == 0 ? 0.08d : _audioWaveEnvelope[index];
                     targetAmplitude = Math.Clamp(sample * 1.2d, 0.03d, 1d);
                 }
@@ -728,75 +1307,105 @@ namespace MDJMediaPlayer
                 _waveAmplitudeSmoother = (_waveAmplitudeSmoother * 0.40d) + (targetAmplitude * 0.60d);
             }
 
-            var volumeHeightFactor = 0.44d + (ViewModel.Volume * 0.74d);
-            var dynamicMaxBarHeight = Math.Min(minSide * 0.30d, maxBarHeight * volumeHeightFactor);
-            var volumeAmplitudeBoost = 0.70d + (ViewModel.Volume * 0.95d);
-            var floorHeightPx = Math.Max(1.2d, dynamicMaxBarHeight * 0.055d);
-
-            var drawLevels = _waveDrawLevels;
-            if (hasTimedSamples)
+            var renderWave = AudioWavePath.Visibility == Visibility.Visible;
+            var renderOrbs = AudioWaveOrbCanvas.Visibility == Visibility.Visible;
+            if (renderWave || renderOrbs)
             {
-                var trailStepMs = Math.Max(0.9d, (WaveVisibleHistoryScale * 1000d) / barCount);
-                var sampleWindowMs = Math.Max(4.5d, WaveBarAmplitudeWindowMs);
-                for (var i = 0; i < barCount; i++)
+                if (barCount >= 12)
                 {
-                    var barTimeMs = probeNowMs - (i * trailStepMs);
-                    var amplitude = SampleRmsNearTime(sampleValues, sampleTimes, barTimeMs, sampleWindowMs);
-                    if (amplitude < 0d)
-                    {
-                        amplitude = SampleAmplitudeNearTime(sampleValues, sampleTimes, barTimeMs, sampleWindowMs * 0.5d);
-                    }
+                    var center = new Point(width * 0.5d, height * 0.5d);
+                    var ringRadius = Math.Max(42d, minSide * 0.24d);
+                    var maxBarHeight = Math.Max(14d, minSide * 0.17d);
+                    var volumeHeightFactor = 0.44d + (ViewModel.Volume * 0.74d);
+                    var dynamicMaxBarHeight = Math.Min(minSide * 0.30d, maxBarHeight * volumeHeightFactor);
+                    var volumeAmplitudeBoost = 0.70d + (ViewModel.Volume * 0.95d);
+                    var floorHeightPx = Math.Max(1.2d, dynamicMaxBarHeight * 0.055d);
 
-                    if (amplitude < 0d)
+                    var drawLevels = _waveDrawLevels;
+                    if (hasTimedSamples)
                     {
-                        amplitude = _waveAmplitudeSmoother * 0.52d;
-                    }
+                        var trailStepMs = Math.Max(0.9d, (WaveVisibleHistoryScale * 1000d) / barCount);
+                        var sampleWindowMs = Math.Max(4.5d, WaveBarAmplitudeWindowMs);
+                        for (var i = 0; i < barCount; i++)
+                        {
+                            var barTimeMs = probeNowMs - (i * trailStepMs);
+                            var amplitude = SampleRmsNearTime(sampleValues, sampleTimes, barTimeMs, sampleWindowMs);
+                            if (amplitude < 0d)
+                            {
+                                amplitude = SampleAmplitudeNearTime(sampleValues, sampleTimes, barTimeMs, sampleWindowMs * 0.5d);
+                            }
 
-                    var normalized = Math.Clamp(amplitude * volumeAmplitudeBoost, 0d, 1.3d);
-                    var targetPx = dynamicMaxBarHeight * Math.Clamp(normalized, 0d, 1d);
+                            if (amplitude < 0d)
+                            {
+                                amplitude = _waveAmplitudeSmoother * 0.52d;
+                            }
 
-                    var current = _spectrumBarLevels[i];
-                    if (targetPx >= current)
-                    {
-                        current = (current * 0.07d) + (targetPx * 0.93d);
+                            var normalized = Math.Clamp(amplitude * volumeAmplitudeBoost, 0d, 1.3d);
+                            var targetPx = dynamicMaxBarHeight * Math.Clamp(normalized, 0d, 1d);
+
+                            var current = _spectrumBarLevels[i];
+                            if (targetPx >= current)
+                            {
+                                current = (current * 0.07d) + (targetPx * 0.93d);
+                            }
+                            else
+                            {
+                                current = (current * 0.38d) + (targetPx * 0.62d);
+                            }
+
+                            _spectrumBarLevels[i] = current;
+                            drawLevels[i] = Math.Clamp(Math.Max(floorHeightPx, current), floorHeightPx, dynamicMaxBarHeight);
+                        }
                     }
                     else
                     {
-                        current = (current * 0.38d) + (targetPx * 0.62d);
+                        var headTargetPx = dynamicMaxBarHeight * Math.Clamp(_waveAmplitudeSmoother * volumeAmplitudeBoost, 0d, 1.2d);
+                        var wrapped = _spectrumBarLevels[barCount - 1];
+                        for (var i = barCount - 1; i >= 1; i--)
+                        {
+                            var shifted = _spectrumBarLevels[i - 1] * 0.97d;
+                            var current = _spectrumBarLevels[i] * 0.92d;
+                            _spectrumBarLevels[i] = Math.Max(current, shifted);
+                        }
+                        _spectrumBarLevels[0] = Math.Max(_spectrumBarLevels[0] * 0.92d, wrapped * 0.97d);
+
+                        var headIndex = (int)((DateTime.UtcNow.Ticks / TimeSpan.TicksPerMillisecond / 28d) % barCount);
+                        if (headIndex < 0)
+                        {
+                            headIndex += barCount;
+                        }
+
+                        _spectrumBarLevels[headIndex] = (_spectrumBarLevels[headIndex] * 0.18d) + (headTargetPx * 0.82d);
+                        for (var i = 0; i < barCount; i++)
+                        {
+                            var shaped = _spectrumBarLevels[i];
+                            drawLevels[i] = Math.Clamp(Math.Max(floorHeightPx, shaped), floorHeightPx, dynamicMaxBarHeight);
+                        }
                     }
 
-                    _spectrumBarLevels[i] = current;
-                    drawLevels[i] = Math.Clamp(Math.Max(floorHeightPx, current), floorHeightPx, dynamicMaxBarHeight);
+                    if (renderOrbs)
+                    {
+                        UpdateWaveOrbPositions(center, ringRadius, dynamicMaxBarHeight, minSide, width, height);
+                    }
+
+                    if (renderWave)
+                    {
+                        AudioWavePath.Data = BuildCircularSpectrumGeometry(width, height, center, ringRadius, drawLevels);
+                    }
+                    else
+                    {
+                        AudioWavePath.Data = null;
+                    }
+                }
+                else if (renderWave)
+                {
+                    AudioWavePath.Data = null;
                 }
             }
             else
             {
-                var headTargetPx = dynamicMaxBarHeight * Math.Clamp(_waveAmplitudeSmoother * volumeAmplitudeBoost, 0d, 1.2d);
-                var wrapped = _spectrumBarLevels[barCount - 1];
-                for (var i = barCount - 1; i >= 1; i--)
-                {
-                    var shifted = _spectrumBarLevels[i - 1] * 0.97d;
-                    var current = _spectrumBarLevels[i] * 0.92d;
-                    _spectrumBarLevels[i] = Math.Max(current, shifted);
-                }
-                _spectrumBarLevels[0] = Math.Max(_spectrumBarLevels[0] * 0.92d, wrapped * 0.97d);
-
-                var headIndex = (int)((DateTime.UtcNow.Ticks / TimeSpan.TicksPerMillisecond / 28d) % barCount);
-                if (headIndex < 0)
-                {
-                    headIndex += barCount;
-                }
-
-                _spectrumBarLevels[headIndex] = (_spectrumBarLevels[headIndex] * 0.18d) + (headTargetPx * 0.82d);
-                for (var i = 0; i < barCount; i++)
-                {
-                    var shaped = _spectrumBarLevels[i];
-                    drawLevels[i] = Math.Clamp(Math.Max(floorHeightPx, shaped), floorHeightPx, dynamicMaxBarHeight);
-                }
+                AudioWavePath.Data = null;
             }
-
-            UpdateWaveOrbPositions(center, ringRadius, dynamicMaxBarHeight, minSide, width, height);
-            AudioWavePath.Data = BuildCircularSpectrumGeometry(width, height, center, ringRadius, drawLevels);
             UpdateWaveSpinTransform();
         }
 
@@ -1989,11 +2598,22 @@ namespace MDJMediaPlayer
             try
             {
                 _isUserDraggingPosition = false;
+                var targetSeconds = ViewModel.Position;
+                if (sender is System.Windows.Controls.Slider slider)
+                {
+                    targetSeconds = slider.Value;
+                    _suppressPositionSync = true;
+                    ViewModel.Position = targetSeconds;
+                    _suppressPositionSync = false;
+                }
                 // Apply the position immediately to mediaElement
-                mediaElement.Position = TimeSpan.FromSeconds(ViewModel.Position);
+                mediaElement.Position = TimeSpan.FromSeconds(targetSeconds);
                 SyncWaveProbePosition(true);
             }
-            catch { }
+            catch
+            {
+                _suppressPositionSync = false;
+            }
         }
 
         private System.Windows.Threading.DispatcherTimer? _hideCursorTimer;
@@ -2084,14 +2704,20 @@ namespace MDJMediaPlayer
                 // Cancel any pending fade-out/fade-in and force a clean visible state.
                 ControlPanel.BeginAnimation(OpacityProperty, null);
                 TopBar.BeginAnimation(OpacityProperty, null);
+                WindowOuterBorder.BeginAnimation(OpacityProperty, null);
 
                 TopBarRow.Height = new GridLength(38);
                 ControlPanel.Visibility = Visibility.Visible;
                 TopBar.Visibility = Visibility.Visible;
                 ControlPanel.Opacity = 1;
                 TopBar.Opacity = 1;
+                WindowOuterBorder.Visibility = Visibility.Visible;
+                WindowOuterBorder.Opacity = 1;
                 _controlsVisible = true;
-                _hideControlsTimer?.Start();
+                if (ViewModel.AutoHideControls)
+                {
+                    _hideControlsTimer?.Start();
+                }
             }
             catch { }
         }
@@ -2100,6 +2726,11 @@ namespace MDJMediaPlayer
         {
             try
             {
+                if (!ViewModel.AutoHideControls)
+                {
+                    ShowControls();
+                    return;
+                }
                 _hideControlsTimer?.Stop();
                 if (!_controlsVisible)
                 {
@@ -2123,16 +2754,39 @@ namespace MDJMediaPlayer
                         ControlPanel.Visibility = Visibility.Collapsed;
                         TopBar.Visibility = Visibility.Collapsed;
                         TopBarRow.Height = new GridLength(0);
+                        WindowOuterBorder.Opacity = 0;
                     }
                     catch { }
                 };
                 ControlPanel.BeginAnimation(OpacityProperty, fadeOut);
                 TopBar.BeginAnimation(OpacityProperty, fadeOut);
+                WindowOuterBorder.BeginAnimation(OpacityProperty, fadeOut);
             }
             catch { }
         }
 
-        
+        private void UpdateAutoHideBehavior()
+        {
+            if (ViewModel.AutoHideControls)
+            {
+                ShowControls();
+                return;
+            }
+
+            _hideControlsTimer?.Stop();
+            _controlsAnimationVersion++;
+            ControlPanel.BeginAnimation(OpacityProperty, null);
+            TopBar.BeginAnimation(OpacityProperty, null);
+            WindowOuterBorder.BeginAnimation(OpacityProperty, null);
+            TopBarRow.Height = new GridLength(38);
+            ControlPanel.Visibility = Visibility.Visible;
+            TopBar.Visibility = Visibility.Visible;
+            ControlPanel.Opacity = 1;
+            TopBar.Opacity = 1;
+            WindowOuterBorder.Visibility = Visibility.Visible;
+            WindowOuterBorder.Opacity = 1;
+            _controlsVisible = true;
+        }
 
         // Allow dragging the window from anywhere
         private void Window_MouseDown(object sender, MouseButtonEventArgs e)
@@ -2168,10 +2822,12 @@ namespace MDJMediaPlayer
                 {
                     _extendedModeWindow = new ExtendedModeWindow
                     {
-                        Owner = this
+                        Owner = this,
+                        ShowInTaskbar = false
                     };
                     _extendedModeWindow.Closed += ExtendedModeWindow_Closed;
                 }
+                _extendedModeWindow.DataContext = DataContext;
 
                 MovePlaybackVisualsToHost(_extendedModeWindow.HostPanel);
                 _extendedModeWindow.Show();

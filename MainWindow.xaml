@@ -46,13 +46,48 @@
             <GradientStop Color="#FF6D8CFF" Offset="0.83" />
             <GradientStop Color="#FFC17CFF" Offset="1.00" />
         </LinearGradientBrush>
+        <RadialGradientBrush x:Key="VinylRecordBrush"
+                             GradientOrigin="0.34,0.32"
+                             Center="0.5,0.5"
+                             RadiusX="0.5"
+                             RadiusY="0.5">
+            <GradientStop Color="#FF0B0B0D" Offset="0.00" />
+            <GradientStop Color="#FF121317" Offset="0.18" />
+            <GradientStop Color="#FF0B0B0D" Offset="0.21" />
+            <GradientStop Color="#FF15171C" Offset="0.26" />
+            <GradientStop Color="#FF0B0B0D" Offset="0.29" />
+            <GradientStop Color="#FF16181D" Offset="0.36" />
+            <GradientStop Color="#FF0B0B0D" Offset="0.40" />
+            <GradientStop Color="#FF14161A" Offset="0.52" />
+            <GradientStop Color="#FF0B0B0D" Offset="0.56" />
+            <GradientStop Color="#FF15171B" Offset="0.68" />
+            <GradientStop Color="#FF0B0B0D" Offset="0.73" />
+            <GradientStop Color="#FF16181D" Offset="0.86" />
+            <GradientStop Color="#FF0B0B0D" Offset="1.00" />
+        </RadialGradientBrush>
+        <RadialGradientBrush x:Key="VinylLabelBrush"
+                             GradientOrigin="0.28,0.28"
+                             Center="0.5,0.5"
+                             RadiusX="0.6"
+                             RadiusY="0.6">
+            <GradientStop Color="#FF3C7CFF" Offset="0.00" />
+            <GradientStop Color="#FF245FDA" Offset="0.55" />
+            <GradientStop Color="#FF0F2E6B" Offset="1.00" />
+        </RadialGradientBrush>
+        <LinearGradientBrush x:Key="VinylGlossBrush"
+                             StartPoint="0.05,0.05"
+                             EndPoint="0.95,0.95">
+            <GradientStop Color="#66FFFFFF" Offset="0.00" />
+            <GradientStop Color="#33FFFFFF" Offset="0.32" />
+            <GradientStop Color="#00FFFFFF" Offset="0.70" />
+        </LinearGradientBrush>
     </Window.Resources>
 
     <Window.DataContext>
         <vm:MainViewModel />
     </Window.DataContext>
 
-    <Grid Margin="12">
+    <Grid Margin="0">
         <Grid.RowDefinitions>
             <RowDefinition x:Name="TopBarRow" Height="38" />
             <RowDefinition Height="*" />
@@ -62,7 +97,7 @@
         <DockPanel x:Name="TopBar"
                    Grid.Row="0"
                    LastChildFill="True"
-                   Margin="4"
+                   Background="{DynamicResource CardAltBackgroundBrush}"
                    MouseDown="Titlebar_MouseDown"
                    MouseEnter="TopBar_MouseEnter"
                    MouseLeave="TopBar_MouseLeave">
@@ -83,13 +118,15 @@
                 <Button x:Name="SFXButton" Content="SFX" Width="80" Margin="8,0" Click="SFXButton_Click" />
                 <Button x:Name="FullscreenButton" Content="Fullscreen" Width="100" Margin="8,0" Click="FullscreenButton_Click" />
                 <Button x:Name="ExtendedModeButton" Content="Extended Mode" Width="110" Margin="8,0" Click="ExtendedModeButton_Click" />
-                <Button x:Name="AboutButton" Content="About" Width="80" Margin="8,0" Click="AboutButton_Click" />
+                <Button x:Name="SettingsButton" Content="Settings" Width="90" Margin="8,0" Click="SettingsButton_Click" />
             </StackPanel>
 
         </DockPanel>
 
         <!-- Media area with overlay controls -->
-        <Border Grid.Row="1" Background="{DynamicResource PanelBackgroundBrush}" CornerRadius="10">
+        <Border Grid.Row="1"
+                Background="{DynamicResource PanelBackgroundBrush}"
+                CornerRadius="10">
             <Grid MouseMove="MediaArea_MouseMove" Background="Transparent">
                 <Grid x:Name="MediaHost">
                     <MediaElement Name="mediaElement" LoadedBehavior="Manual" UnloadedBehavior="Manual" Stretch="Uniform" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" />
@@ -101,11 +138,18 @@
                       Margin="16"
                       IsHitTestVisible="False"
                       Visibility="Collapsed">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="0.45*" />
+                        <ColumnDefinition Width="0.55*" />
+                    </Grid.ColumnDefinitions>
                     <Canvas x:Name="AudioWaveOrbCanvas"
+                            Grid.ColumnSpan="2"
                             HorizontalAlignment="Stretch"
                             VerticalAlignment="Stretch"
-                            IsHitTestVisible="False" />
+                            IsHitTestVisible="False"
+                            Visibility="Collapsed" />
                     <Grid x:Name="AudioWaveSpinLayer"
+                          Grid.Column="0"
                           HorizontalAlignment="Stretch"
                           VerticalAlignment="Stretch"
                           RenderTransformOrigin="0.5,0.5">
@@ -117,26 +161,91 @@
                                  VerticalAlignment="Center"
                                  Width="280"
                                  Height="280"
-                                 Stroke="{StaticResource AudioWaveRainbowRingBrush}"
-                                 StrokeThickness="4"
-                                 Opacity="0.95">
+                                 Fill="{StaticResource VinylRecordBrush}"
+                                 Stroke="#1B1B1E"
+                                 StrokeThickness="2"
+                                 Opacity="0.98">
                             <Ellipse.Effect>
-                                <BlurEffect Radius="16" />
+                                <DropShadowEffect Color="#000000" ShadowDepth="0" BlurRadius="24" Opacity="0.65" />
                             </Ellipse.Effect>
                         </Ellipse>
+                        <Ellipse HorizontalAlignment="Center"
+                                 VerticalAlignment="Center"
+                                 Width="{Binding Width, ElementName=AudioWaveOuterRing}"
+                                 Height="{Binding Height, ElementName=AudioWaveOuterRing}"
+                                 Stroke="#222226"
+                                 StrokeThickness="1"
+                                 Opacity="0.35" />
+                        <Ellipse HorizontalAlignment="Center"
+                                 VerticalAlignment="Center"
+                                 Width="{Binding Width, ElementName=AudioWaveOuterRing}"
+                                 Height="{Binding Height, ElementName=AudioWaveOuterRing}"
+                                 Stroke="#1A1A1E"
+                                 StrokeThickness="1"
+                                 Opacity="0.30"
+                                 RenderTransformOrigin="0.5,0.5">
+                            <Ellipse.RenderTransform>
+                                <ScaleTransform ScaleX="0.86" ScaleY="0.86" />
+                            </Ellipse.RenderTransform>
+                        </Ellipse>
+                        <Ellipse HorizontalAlignment="Center"
+                                 VerticalAlignment="Center"
+                                 Width="{Binding Width, ElementName=AudioWaveOuterRing}"
+                                 Height="{Binding Height, ElementName=AudioWaveOuterRing}"
+                                 Fill="{StaticResource VinylGlossBrush}"
+                                 Opacity="0.42" />
                         <Ellipse x:Name="AudioWaveInnerRing"
                                  HorizontalAlignment="Center"
                                  VerticalAlignment="Center"
                                  Width="236"
                                  Height="236"
-                                 Stroke="{StaticResource AudioWaveRainbowRingBrush}"
-                                 StrokeThickness="2"
-                                 StrokeDashArray="0.4,2.2"
-                                 StrokeDashCap="Round"
-                                 Opacity="0.95" />
+                                 Fill="{StaticResource VinylLabelBrush}"
+                                 Stroke="#F2F2F2"
+                                 StrokeThickness="1.4"
+                                 Opacity="0.98" />
+                        <Ellipse x:Name="AudioWaveLabelIcon"
+                                 HorizontalAlignment="Center"
+                                 VerticalAlignment="Center"
+                                 Width="{Binding Width, ElementName=AudioWaveInnerRing}"
+                                 Height="{Binding Height, ElementName=AudioWaveInnerRing}"
+                                 Opacity="0.9"
+                                 SnapsToDevicePixels="True"
+                                 RenderTransformOrigin="0.5,0.5">
+                            <Ellipse.RenderTransform>
+                                <ScaleTransform ScaleX="1.1" ScaleY="1.1" />
+                            </Ellipse.RenderTransform>
+                            <Ellipse.Fill>
+                                <ImageBrush ImageSource="pack://application:,,,/Assets/app.ico"
+                                            Stretch="Uniform" />
+                            </Ellipse.Fill>
+                        </Ellipse>
+                        <Ellipse HorizontalAlignment="Center"
+                                 VerticalAlignment="Center"
+                                 Width="{Binding Width, ElementName=AudioWaveInnerRing}"
+                                 Height="{Binding Height, ElementName=AudioWaveInnerRing}"
+                                 Fill="#FFFFFF"
+                                 Opacity="0.10"
+                                 RenderTransformOrigin="0.5,0.5">
+                            <Ellipse.RenderTransform>
+                                <ScaleTransform ScaleX="0.72" ScaleY="0.72" />
+                            </Ellipse.RenderTransform>
+                        </Ellipse>
+                        <Ellipse HorizontalAlignment="Center"
+                                 VerticalAlignment="Center"
+                                 Width="{Binding Width, ElementName=AudioWaveInnerRing}"
+                                 Height="{Binding Height, ElementName=AudioWaveInnerRing}"
+                                 Fill="#0A0A0C"
+                                 Stroke="#F2F2F2"
+                                 StrokeThickness="1"
+                                 RenderTransformOrigin="0.5,0.5">
+                            <Ellipse.RenderTransform>
+                                <ScaleTransform ScaleX="0.08" ScaleY="0.08" />
+                            </Ellipse.RenderTransform>
+                        </Ellipse>
                         <Path Data="{Binding Data, ElementName=AudioWavePath}"
-                              Opacity="0.44"
+                              Opacity="0"
                               SnapsToDevicePixels="True"
+                              Visibility="Collapsed"
                               Fill="{StaticResource AudioWaveRainbowBrushSoft}">
                             <Path.Effect>
                                 <BlurEffect Radius="8" />
@@ -144,10 +253,38 @@
                         </Path>
                         <Path x:Name="AudioWavePath"
                               StrokeThickness="0"
-                              Opacity="0.96"
+                              Opacity="0"
+                              Visibility="Collapsed"
                               SnapsToDevicePixels="True"
                               Fill="{StaticResource AudioWaveRainbowBrush}" />
                     </Grid>
+                    <Border Grid.Column="1"
+                            HorizontalAlignment="Stretch"
+                            VerticalAlignment="Center"
+                            Margin="18,0,18,0"
+                            Background="{DynamicResource ControlBackgroundBrush}"
+                            BorderBrush="{DynamicResource AeroBorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="10"
+                            Padding="16">
+                        <StackPanel>
+                            <TextBlock Text="NOW PLAYING"
+                                       Foreground="{DynamicResource AeroSubTextBrush}"
+                                       FontSize="12"
+                                       FontWeight="SemiBold" />
+                            <TextBlock Text="{Binding Selected.Title, TargetNullValue=No track}"
+                                       Foreground="{DynamicResource AeroTextBrush}"
+                                       FontSize="26"
+                                       FontWeight="SemiBold"
+                                       Margin="0,8,0,0"
+                                       TextTrimming="CharacterEllipsis" />
+                            <TextBlock Text="{Binding Selected.FilePath, TargetNullValue=''}"
+                                       Foreground="{DynamicResource AeroSubTextBrush}"
+                                       FontSize="12"
+                                       Margin="0,6,0,0"
+                                       TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+                    </Border>
                 </Grid>
 
                 <!-- "NO VIDEO FOUND" message -->
@@ -181,9 +318,15 @@
                 <!-- Overlay debug/status (moved next to Next button) -->
 
                 <!-- Floating control panel at bottom center -->
-                <Border x:Name="ControlPanel" Style="{StaticResource FloatingControlPanel}" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,18" MouseEnter="ControlPanel_MouseEnter" MouseLeave="ControlPanel_MouseLeave">
-                    <StackPanel Orientation="Vertical" HorizontalAlignment="Stretch">
-                        <TextBlock Text="(New file added)" Foreground="LimeGreen" HorizontalAlignment="Center" Margin="0,0,0,5" FontSize="14" Visibility="Collapsed">
+                <Border x:Name="ControlPanel" Style="{StaticResource FloatingControlPanel}" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,14" MouseEnter="ControlPanel_MouseEnter" MouseLeave="ControlPanel_MouseLeave">
+                    <Grid>
+                        <Border Background="{DynamicResource ControlPanelHazeBrush}"
+                                Opacity="{DynamicResource ControlPanelHazeOpacity}"
+                                CornerRadius="6"
+                                Margin="1"
+                                IsHitTestVisible="False" />
+                        <StackPanel Orientation="Vertical" HorizontalAlignment="Stretch" Margin="6">
+                        <TextBlock Text="(New file added)" Foreground="LimeGreen" HorizontalAlignment="Center" Margin="0,0,0,4" FontSize="12" Visibility="Collapsed">
                             <TextBlock.Style>
                                 <Style TargetType="TextBlock">
                                     <Style.Triggers>
@@ -205,36 +348,57 @@
                                 </Style>
                             </TextBlock.Style>
                         </TextBlock>
-                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,8">
-                            <Button Width="44" Height="44" Command="{Binding StopCommand}" Margin="6">
-                                <Path Data="{StaticResource StopIcon}" Fill="#FFF" Stretch="Uniform" Width="18" Height="18" />
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,6">
+                            <Button Width="36" Height="36" Command="{Binding StopCommand}" Margin="4">
+                                <Path Data="{StaticResource StopIcon}" Fill="#FFF" Stretch="Uniform" Width="14" Height="14" />
                             </Button>
-                            <Button Width="44" Height="44" Command="{Binding PrevCommand}" Margin="6">
-                                <Path Data="{StaticResource PrevIcon}" Fill="#FFF" Stretch="Uniform" Width="18" Height="18" />
+                            <Button Width="36" Height="36" Command="{Binding PrevCommand}" Margin="4">
+                                <Path Data="{StaticResource PrevIcon}" Fill="#FFF" Stretch="Uniform" Width="14" Height="14" />
                             </Button>
-                            <ToggleButton Width="64" Height="64" IsChecked="{Binding IsPlaying}" Margin="6">
+                            <ToggleButton Width="50" Height="50" IsChecked="{Binding IsPlaying}" Margin="4">
                                 <ToggleButton.Template>
                                     <ControlTemplate TargetType="ToggleButton">
-                                        <Border Background="#232425" CornerRadius="36" Width="64" Height="64">
-                                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                        <Border x:Name="Outer"
+                                                Background="{DynamicResource AeroButtonBrush}"
+                                                BorderBrush="{DynamicResource AeroBorderDarkBrush}"
+                                                BorderThickness="1"
+                                                CornerRadius="28"
+                                                Width="50"
+                                                Height="50">
+                                            <Grid>
+                                                <Border x:Name="Gloss"
+                                                        Background="{DynamicResource AeroButtonGlossBrush}"
+                                                        CornerRadius="26"
+                                                        Margin="1"
+                                                        Opacity="0.45" />
+                                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                            </Grid>
                                         </Border>
                                         <ControlTemplate.Triggers>
                                             <Trigger Property="IsChecked" Value="False">
                                                 <Setter Property="Content"><Setter.Value>
-                                                    <Path Data="{StaticResource PlayIcon}" Fill="#FFF" Stretch="Uniform" Width="22" Height="22" />
+                                                    <Path Data="{StaticResource PlayIcon}" Fill="#FFF" Stretch="Uniform" Width="18" Height="18" />
                                                 </Setter.Value></Setter>
                                             </Trigger>
                                             <Trigger Property="IsChecked" Value="True">
                                                 <Setter Property="Content"><Setter.Value>
-                                                    <Path Data="{StaticResource PauseIcon}" Fill="#FFF" Stretch="Uniform" Width="22" Height="22" />
+                                                    <Path Data="{StaticResource PauseIcon}" Fill="#FFF" Stretch="Uniform" Width="18" Height="18" />
                                                 </Setter.Value></Setter>
+                                            </Trigger>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="Outer" Property="Background" Value="{DynamicResource AeroButtonHoverBrush}" />
+                                                <Setter TargetName="Outer" Property="BorderBrush" Value="{DynamicResource AeroBorderBrush}" />
+                                            </Trigger>
+                                            <Trigger Property="IsPressed" Value="True">
+                                                <Setter TargetName="Outer" Property="Background" Value="{DynamicResource AeroButtonPressedBrush}" />
+                                                <Setter TargetName="Gloss" Property="Opacity" Value="0.18" />
                                             </Trigger>
                                         </ControlTemplate.Triggers>
                                     </ControlTemplate>
                                 </ToggleButton.Template>
                             </ToggleButton>
-                            <Button x:Name="NextButton" Width="44" Height="44" Command="{Binding NextCommand}" Margin="6">
-                                <Path Data="{StaticResource NextIcon}" Fill="#FFF" Stretch="Uniform" Width="18" Height="18" />
+                            <Button x:Name="NextButton" Width="36" Height="36" Command="{Binding NextCommand}" Margin="4">
+                                <Path Data="{StaticResource NextIcon}" Fill="#FFF" Stretch="Uniform" Width="14" Height="14" />
                             </Button>
                             <TextBlock x:Name="DebugStatus" Foreground="#FFF" FontSize="12" VerticalAlignment="Center" Margin="8,0,0,0" Text="No track" />
                         </StackPanel>
@@ -248,7 +412,12 @@
                             </Grid.ColumnDefinitions>
 
                             <TextBlock Text="{Binding CurrentTimeText}" Foreground="#DDD" VerticalAlignment="Center" Margin="8" Grid.Column="0" />
-                            <Slider x:Name="PositionSlider" Minimum="0" Maximum="{Binding Duration}" Value="{Binding Position, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Grid.Column="1" VerticalAlignment="Center"
+                            <Slider x:Name="PositionSlider"
+                                    Minimum="0"
+                                    Maximum="{Binding Duration}"
+                                    Value="{Binding Position, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                    Grid.Column="1"
+                                    VerticalAlignment="Center"
                                     PreviewMouseLeftButtonDown="PositionSlider_PreviewMouseLeftButtonDown" PreviewMouseLeftButtonUp="PositionSlider_PreviewMouseLeftButtonUp" />
                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Grid.Column="2" VerticalAlignment="Center">
                                 <TextBlock Text="{Binding TotalTimeText}" Foreground="#DDD" VerticalAlignment="Center" Margin="8,0" />
@@ -256,10 +425,19 @@
                                 <Slider x:Name="VolumeSlider" Width="110" Minimum="0" Maximum="1" Value="{Binding Volume, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                             </StackPanel>
                         </Grid>
-                    </StackPanel>
+                        </StackPanel>
+                    </Grid>
                 </Border>
             </Grid>
         </Border>
+
+        <Border x:Name="WindowOuterBorder"
+                Grid.RowSpan="2"
+                BorderBrush="{DynamicResource AeroBorderDarkBrush}"
+                BorderThickness="1,0,1,1"
+                CornerRadius="0,0,10,10"
+                IsHitTestVisible="False"
+                SnapsToDevicePixels="True" />
     </Grid>
 </Window>
 

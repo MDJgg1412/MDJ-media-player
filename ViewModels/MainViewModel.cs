@@ -60,6 +60,114 @@ namespace MDJMediaPlayer.ViewModels
             set { _volume = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Volume))); }
         }
 
+        private string _theme = "Zune";
+        public string Theme
+        {
+            get => _theme;
+            set
+            {
+                var normalized = value ?? string.Empty;
+                if (string.Equals(normalized, "Dark", StringComparison.OrdinalIgnoreCase))
+                {
+                    normalized = "Zune";
+                }
+                if (string.IsNullOrWhiteSpace(normalized))
+                {
+                    normalized = "Aero";
+                }
+                if (string.Equals(_theme, normalized, StringComparison.OrdinalIgnoreCase)) return;
+                _theme = normalized;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Theme)));
+            }
+        }
+
+        private bool _loopMedia;
+        public bool LoopMedia
+        {
+            get => _loopMedia;
+            set
+            {
+                if (_loopMedia == value) return;
+                _loopMedia = value;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LoopMedia)));
+            }
+        }
+
+        private bool _autoplayMedia = false;
+        public bool AutoplayMedia
+        {
+            get => _autoplayMedia;
+            set
+            {
+                if (_autoplayMedia == value) return;
+                _autoplayMedia = value;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(AutoplayMedia)));
+            }
+        }
+
+        private bool _autoNext = false;
+        public bool AutoNext
+        {
+            get => _autoNext;
+            set
+            {
+                if (_autoNext == value) return;
+                _autoNext = value;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(AutoNext)));
+            }
+        }
+
+        private bool _loopPlaylist;
+        public bool LoopPlaylist
+        {
+            get => _loopPlaylist;
+            set
+            {
+                if (_loopPlaylist == value) return;
+                _loopPlaylist = value;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LoopPlaylist)));
+            }
+        }
+
+        private bool _autoHideControls = false;
+        public bool AutoHideControls
+        {
+            get => _autoHideControls;
+            set
+            {
+                if (_autoHideControls == value) return;
+                _autoHideControls = value;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(AutoHideControls)));
+            }
+        }
+
+
+        private double _aeroColorLevel = 100d;
+        public double AeroColorLevel
+        {
+            get => _aeroColorLevel;
+            set
+            {
+                var clamped = Math.Clamp(value, 0d, 100d);
+                if (Math.Abs(_aeroColorLevel - clamped) < 0.001d) return;
+                _aeroColorLevel = clamped;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(AeroColorLevel)));
+            }
+        }
+
+        private double _aeroTransparency = 0d;
+        public double AeroTransparency
+        {
+            get => _aeroTransparency;
+            set
+            {
+                var clamped = Math.Clamp(value, 0d, 100d);
+                if (Math.Abs(_aeroTransparency - clamped) < 0.001d) return;
+                _aeroTransparency = clamped;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(AeroTransparency)));
+            }
+        }
+
         private double _position;
         // Position in seconds for binding to seek slider
         public double Position
@@ -112,7 +220,7 @@ namespace MDJMediaPlayer.ViewModels
 
                 IsNewVideoAvailable = true;
 
-                if (Selected == null && Playlist.Any())
+                if (AutoplayMedia && Selected == null && Playlist.Any())
                 {
                     Selected = Playlist[0];
                     IsPlaying = true;
@@ -139,6 +247,49 @@ namespace MDJMediaPlayer.ViewModels
             if (next != null) Selected = next; else { Selected = Playlist[0]; }
             IsPlaying = true;
             IsNewVideoAvailable = false;
+        }
+
+        public bool TryPlayNextValid(bool wrap)
+        {
+            if (!Playlist.Any()) return false;
+            var startIndex = Selected == null ? -1 : Playlist.IndexOf(Selected);
+            var index = startIndex;
+
+            for (var attempts = 0; attempts < Playlist.Count; attempts++)
+            {
+                index++;
+                if (index >= Playlist.Count)
+                {
+                    if (!wrap)
+                    {
+                        return false;
+                    }
+                    index = 0;
+                }
+
+                if (index == startIndex && startIndex >= 0)
+                {
+                    return false;
+                }
+
+                var item = Playlist[index];
+                if (item == null || string.IsNullOrWhiteSpace(item.FilePath))
+                {
+                    continue;
+                }
+
+                if (!System.IO.File.Exists(item.FilePath))
+                {
+                    continue;
+                }
+
+                Selected = item;
+                IsPlaying = true;
+                IsNewVideoAvailable = false;
+                return true;
+            }
+
+            return false;
         }
 
         public void PlayPrevious()
