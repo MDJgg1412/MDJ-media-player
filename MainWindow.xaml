@@ -8,6 +8,7 @@
         Title="MDJ Media Player" Height="640" Width="1100" Icon="pack://application:,,,/Assets/app.ico"
         WindowStyle="None" AllowsTransparency="False" Background="{DynamicResource WindowBackgroundBrush}"
         MouseDown="Window_MouseDown"
+        PreviewKeyDown="Window_PreviewKeyDown"
         MouseMove="Window_MouseMove"
         MouseLeave="Window_MouseLeave">
     <Window.Resources>
@@ -287,8 +288,8 @@
                     </Border>
                 </Grid>
 
-                <!-- "NO VIDEO FOUND" message -->
-                <TextBlock Text="NO VIDEO FOUND"
+                <!-- "NO MEDIA FOUND" message -->
+                <TextBlock Text="NO MEDIA FOUND"
                            HorizontalAlignment="Center"
                            VerticalAlignment="Center"
                            FontSize="24"

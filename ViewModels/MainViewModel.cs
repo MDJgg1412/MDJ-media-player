@@ -23,11 +23,10 @@ namespace MDJMediaPlayer.ViewModels
             { 
                 _selected = value; 
                 PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Selected))); 
-                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(NoVideoFound)));
             }
         }
 
-        public bool NoVideoFound => Selected == null;
+        public bool NoVideoFound => Playlist.Count == 0;
 
         private bool _isPlaying;
         public bool IsPlaying
@@ -93,7 +92,7 @@ namespace MDJMediaPlayer.ViewModels
             }
         }
 
-        private bool _autoplayMedia = false;
+        private bool _autoplayMedia = true;
         public bool AutoplayMedia
         {
             get => _autoplayMedia;
@@ -195,6 +194,9 @@ namespace MDJMediaPlayer.ViewModels
 
         public MainViewModel()
         {
+            Playlist.CollectionChanged += (_, _) =>
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(NoVideoFound)));
+
             AddFilesCommand = new RelayCommand(_ => AddFiles());
             PlayPauseCommand = new RelayCommand(_ => TogglePlayPause());
             StopCommand = new RelayCommand(_ => Stop());
@@ -213,17 +215,36 @@ namespace MDJMediaPlayer.ViewModels
 
             if (dlg.ShowDialog() == true)
             {
+                MediaItem? firstSelectedItem = null;
+
                 foreach (var file in dlg.FileNames)
                 {
-                    Playlist.Add(new MediaItem { FilePath = file, Title = System.IO.Path.GetFileName(file) });
+                    var existingItem = Playlist.FirstOrDefault(item =>
+                        string.Equals(item.FilePath, file, StringComparison.OrdinalIgnoreCase));
+
+                    if (existingItem != null)
+                    {
+                        firstSelectedItem ??= existingItem;
+                        continue;
+                    }
+
+                    var item = new MediaItem
+                    {
+                        FilePath = file,
+                        Title = System.IO.Path.GetFileName(file)
+                    };
+
+                    Playlist.Add(item);
+                    firstSelectedItem ??= item;
                 }
 
                 IsNewVideoAvailable = true;
 
-                if (AutoplayMedia && Selected == null && Playlist.Any())
+                if (firstSelectedItem != null)
                 {
-                    Selected = Playlist[0];
+                    Position = 0;
                     IsPlaying = true;
+                    Selected = firstSelectedItem;
                 }
             }
         }

@@ -22,6 +22,7 @@ namespace MDJMediaPlayer
         private System.Windows.Threading.DispatcherTimer? _timer;
         private bool _isUserDraggingPosition = false;
         private bool _suppressPositionSync = false;
+        private bool _isSwitchingSelectedMedia = false;
         private System.Windows.Threading.DispatcherTimer? _hideControlsTimer;
         private bool _controlsVisible = true;
         private int _controlsAnimationVersion = 0;
@@ -139,6 +140,7 @@ namespace MDJMediaPlayer
 
             // Wire commands for track change
             ViewModel.PropertyChanged += ViewModel_PropertyChanged;
+            ViewModel.Playlist.CollectionChanged += Playlist_CollectionChanged;
 
             // Setup a timer to update playback position
             _timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
@@ -747,24 +749,29 @@ namespace MDJMediaPlayer
 
         private void LoadStartupMediaFromArguments()
         {
-            var args = Environment.GetCommandLineArgs();
-            if (args.Length <= 1)
+            var startupArgs = (Application.Current as App)?.StartupArguments ?? Array.Empty<string>();
+            if (startupArgs.Length == 0)
             {
-                return;
+                var environmentArgs = Environment.GetCommandLineArgs();
+                if (environmentArgs.Length <= 1)
+                {
+                    return;
+                }
+
+                startupArgs = new string[environmentArgs.Length - 1];
+                Array.Copy(environmentArgs, 1, startupArgs, 0, startupArgs.Length);
             }
 
-            var firstTarget = AddMediaFilesFromArguments(args, 1);
+            var firstTarget = AddMediaFilesFromArguments(startupArgs, 0);
             if (firstTarget == null)
             {
                 return;
             }
 
-            if (ViewModel.AutoplayMedia)
-            {
-                ViewModel.Position = 0;
-                ViewModel.Selected = firstTarget;
-                ViewModel.IsPlaying = true;
-            }
+            // Opening the app with a specific media file is an explicit play action.
+            ViewModel.Position = 0;
+            ViewModel.IsPlaying = true;
+            ViewModel.Selected = firstTarget;
         }
 
         private Models.MediaItem? AddMediaFilesFromArguments(string[] args, int startIndex)
@@ -825,6 +832,18 @@ namespace MDJMediaPlayer
                 return null;
             }
 
+            if (Uri.TryCreate(candidate, UriKind.Absolute, out var uri) && uri.IsFile)
+            {
+                try
+                {
+                    candidate = uri.LocalPath;
+                }
+                catch
+                {
+                    return null;
+                }
+            }
+
             // Ignore startup switches or activation flags passed by shell integrations.
             if (candidate.StartsWith("-", StringComparison.Ordinal))
             {
@@ -875,6 +894,7 @@ namespace MDJMediaPlayer
                     Title = System.IO.Path.GetFileName(mediaPath)
                 });
             }
+
             if (ViewModel.AutoplayMedia && ViewModel.Selected == null && ViewModel.Playlist.Count > 0)
             {
                 ViewModel.Selected = ViewModel.Playlist[0];
@@ -893,6 +913,50 @@ namespace MDJMediaPlayer
                 writer.WriteLine("#EXTINF:-1," + title);
                 writer.WriteLine(item.FilePath);
             }
+        }
+
+        private void Playlist_CollectionChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
+        {
+            if (ViewModel.Playlist.Count != 0)
+            {
+                return;
+            }
+
+            if (ViewModel.Selected != null)
+            {
+                ViewModel.Selected = null;
+                return;
+            }
+
+            UnloadMediaIfPlaylistIsEmpty();
+        }
+
+        private void UnloadMediaIfPlaylistIsEmpty()
+        {
+            if (ViewModel.Playlist.Count > 0)
+            {
+                return;
+            }
+
+            _isSwitchingSelectedMedia = false;
+
+            try { mediaElement.Stop(); } catch { }
+
+            mediaElement.Source = null;
+            mediaElement.Visibility = Visibility.Collapsed;
+            ViewModel.Duration = 0;
+            ViewModel.Position = 0;
+
+            if (ViewModel.IsPlaying)
+            {
+                ViewModel.IsPlaying = false;
+            }
+
+            _isCurrentTrackAudioOnly = false;
+            _audioWaveEnvelope = Array.Empty<double>();
+            StopWaveProbe();
+            UpdateAudioWaveVisibility();
+            DebugStatus.Text = "No media loaded.";
         }
 
         private void ViewModel_PropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
@@ -936,11 +1000,30 @@ namespace MDJMediaPlayer
                             StopWaveProbe();
                         }
 
+                        _isSwitchingSelectedMedia = true;
                         mediaElement.Stop();
                         mediaElement.Source = new Uri(selectedPath, UriKind.Absolute);
                         mediaElement.Position = TimeSpan.FromSeconds(ViewModel.Position);
                         mediaElement.Volume = ViewModel.Volume;
-                        if (ViewModel.IsPlaying) mediaElement.Play();
+                        if (ViewModel.IsPlaying)
+                        {
+                            mediaElement.Play();
+
+                            // Re-assert playback after the new source assignment settles on the UI thread.
+                            Dispatcher.BeginInvoke(new Action(() =>
+                            {
+                                try
+                                {
+                                    if (ViewModel.IsPlaying &&
+                                        ViewModel.Selected != null &&
+                                        string.Equals(ViewModel.Selected.FilePath, selectedPath, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        mediaElement.Play();
+                                    }
+                                }
+                                catch { }
+                            }), System.Windows.Threading.DispatcherPriority.Background);
+                        }
                         DebugStatus.Text = "Source: " + selectedPath;
                     }
                     else
@@ -948,12 +1031,18 @@ namespace MDJMediaPlayer
                         _isCurrentTrackAudioOnly = false;
                         _audioWaveEnvelope = Array.Empty<double>();
                         StopWaveProbe();
+
+                        if (ViewModel.Playlist.Count == 0)
+                        {
+                            UnloadMediaIfPlaylistIsEmpty();
+                        }
                     }
 
                     UpdateAudioWaveVisibility();
                 }
                 catch (Exception ex)
                 {
+                    _isSwitchingSelectedMedia = false;
                     MessageBox.Show("Unable to play file: " + ex.Message, "Playback Error", MessageBoxButton.OK, MessageBoxImage.Error);
                     DebugStatus.Text = "Error: " + ex.Message;
                     _isCurrentTrackAudioOnly = false;
@@ -1052,6 +1141,8 @@ namespace MDJMediaPlayer
         {
             try
             {
+                _isSwitchingSelectedMedia = false;
+
                 if (mediaElement.NaturalDuration.HasTimeSpan)
                 {
                     ViewModel.Duration = mediaElement.NaturalDuration.TimeSpan.TotalSeconds;
@@ -1101,9 +1192,16 @@ namespace MDJMediaPlayer
                         MessageBox.Show(msg + "\n\nTry a different file or install media codecs (Media Feature Pack / media codecs).", "Video Not Detected", MessageBoxButton.OK, MessageBoxImage.Warning);
                     }
                 }
+
+                // Startup-opened files can request playback before the MediaElement is fully ready.
+                if (ViewModel.IsPlaying)
+                {
+                    mediaElement.Play();
+                }
             }
             catch (Exception ex)
             {
+                _isSwitchingSelectedMedia = false;
                 MessageBox.Show("An error occurred while opening media: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 DebugStatus.Text = "Error: " + ex.Message;
             }
@@ -1111,6 +1209,11 @@ namespace MDJMediaPlayer
 
         private void MediaElement_MediaEnded(object? sender, RoutedEventArgs e)
         {
+            if (_isSwitchingSelectedMedia)
+            {
+                return;
+            }
+
             if (ViewModel.LoopMedia && ViewModel.Selected != null)
             {
                 try
@@ -1146,6 +1249,12 @@ namespace MDJMediaPlayer
 
         private void MediaElement_MediaFailed(object? sender, ExceptionRoutedEventArgs e)
         {
+            if (_isSwitchingSelectedMedia)
+            {
+                _isSwitchingSelectedMedia = false;
+                return;
+            }
+
             var msg = e.ErrorException?.ToString() ?? "Unknown media failure.";
             MessageBox.Show("Playback failed: " + msg, "Playback Error", MessageBoxButton.OK, MessageBoxImage.Error);
             DebugStatus.Text = "Playback failed: " + msg;
@@ -1197,7 +1306,7 @@ namespace MDJMediaPlayer
 
         private void UpdateAudioWaveVisibility()
         {
-            var shouldShow = ViewModel.IsPlaying && _isCurrentTrackAudioOnly && ViewModel.Selected != null;
+            var shouldShow = _isCurrentTrackAudioOnly && ViewModel.Selected != null;
 
             if (!shouldShow)
             {
@@ -1213,7 +1322,15 @@ namespace MDJMediaPlayer
 
             AudioWaveOverlay.Visibility = Visibility.Visible;
             RenderAudioWaveFrame();
-            _audioWaveTimer?.Start();
+
+            if (ViewModel.IsPlaying)
+            {
+                _audioWaveTimer?.Start();
+            }
+            else
+            {
+                _audioWaveTimer?.Stop();
+            }
         }
 
         private void AudioWaveTimer_Tick(object? sender, EventArgs e)
@@ -1413,6 +1530,13 @@ namespace MDJMediaPlayer
         {
             if (AudioWaveSpinTransform == null)
             {
+                return;
+            }
+
+            if (!ViewModel.IsPlaying)
+            {
+                _lastWaveSpinUpdateUtc = DateTime.UtcNow;
+                AudioWaveSpinTransform.Angle = _waveSpinAngle;
                 return;
             }
 
@@ -2614,6 +2738,54 @@ namespace MDJMediaPlayer
             {
                 _suppressPositionSync = false;
             }
+        }
+
+        private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Space)
+            {
+                if (ViewModel.Selected != null)
+                {
+                    ViewModel.IsPlaying = !ViewModel.IsPlaying;
+                    e.Handled = true;
+                }
+                return;
+            }
+
+            if (e.Key == Key.Left)
+            {
+                if (TrySeekBySeconds(-10d))
+                {
+                    e.Handled = true;
+                }
+                return;
+            }
+
+            if (e.Key == Key.Right)
+            {
+                if (TrySeekBySeconds(10d))
+                {
+                    e.Handled = true;
+                }
+            }
+        }
+
+        private bool TrySeekBySeconds(double deltaSeconds)
+        {
+            if (ViewModel.Selected == null)
+            {
+                return false;
+            }
+
+            var duration = Math.Max(0d, ViewModel.Duration);
+            if (duration <= 0d)
+            {
+                return false;
+            }
+
+            var targetSeconds = Math.Clamp(ViewModel.Position + deltaSeconds, 0d, duration);
+            ViewModel.Position = targetSeconds;
+            return true;
         }
 
         private System.Windows.Threading.DispatcherTimer? _hideCursorTimer;

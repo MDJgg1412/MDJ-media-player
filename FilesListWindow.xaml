@@ -5,6 +5,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
         Title="Files List" Height="450" Width="500"
+        PreviewKeyDown="Window_PreviewKeyDown"
         ResizeMode="CanMinimize"
         WindowStyle="None" AllowsTransparency="False" Background="{DynamicResource WindowBackgroundBrush}">
     <Grid>
@@ -39,6 +40,7 @@
                      Grid.Row="1"
                      ItemsSource="{Binding Playlist}"
                      SelectedItem="{Binding Selected, Mode=TwoWay}"
+                     IsSynchronizedWithCurrentItem="False"
                      DisplayMemberPath="Title" />
 
             <!-- Bottom action bar (kept for convenience) -->

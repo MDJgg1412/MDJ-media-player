@@ -1,4 +1,5 @@
 using MDJMediaPlayer.ViewModels;
+using MDJMediaPlayer.Models;
 using Microsoft.Win32;
 using System;
 using System.IO;
@@ -46,6 +47,65 @@ namespace MDJMediaPlayer
             }
 
             try { this.DragMove(); } catch { }
+        }
+
+        private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key != Key.Delete || DataContext is not MainViewModel viewModel)
+            {
+                return;
+            }
+
+            var selectedItem = PlaylistListBox.SelectedItem as MediaItem ?? viewModel.Selected;
+            if (selectedItem == null)
+            {
+                return;
+            }
+
+            RemovePlaylistItem(viewModel, selectedItem);
+            e.Handled = true;
+        }
+
+        private void RemovePlaylistItem(MainViewModel viewModel, MediaItem itemToRemove)
+        {
+            var removedIndex = viewModel.Playlist.IndexOf(itemToRemove);
+            if (removedIndex < 0)
+            {
+                return;
+            }
+
+            MediaItem? replacementItem = null;
+            if (removedIndex + 1 < viewModel.Playlist.Count)
+            {
+                replacementItem = viewModel.Playlist[removedIndex + 1];
+            }
+            else if (removedIndex - 1 >= 0)
+            {
+                replacementItem = viewModel.Playlist[removedIndex - 1];
+            }
+            var removedWasSelected = ReferenceEquals(viewModel.Selected, itemToRemove);
+
+            if (removedWasSelected)
+            {
+                if (replacementItem != null)
+                {
+                    viewModel.Position = 0;
+                    viewModel.Selected = replacementItem;
+                }
+                else
+                {
+                    viewModel.Selected = null;
+                    viewModel.IsPlaying = false;
+                    viewModel.Position = 0;
+                }
+            }
+
+            viewModel.Playlist.RemoveAt(removedIndex);
+
+            if (replacementItem != null)
+            {
+                PlaylistListBox.SelectedItem = replacementItem;
+            }
         }
 
         private void SavePlaylistButton_Click(object sender, RoutedEventArgs e)
@@ -141,7 +201,7 @@ namespace MDJMediaPlayer
                     addedCount++;
                 }
 
-                if (viewModel.Selected == null && viewModel.Playlist.Count > 0)
+                if (viewModel.AutoplayMedia && viewModel.Selected == null && viewModel.Playlist.Count > 0)
                 {
                     viewModel.Selected = viewModel.Playlist[0];
                 }
