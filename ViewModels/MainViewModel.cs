@@ -4,6 +4,7 @@ using Microsoft.Win32;
 using System;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Collections.Generic;
 using System.Linq;
 using System.Windows.Input;
 using System.Threading.Tasks;
@@ -13,6 +14,11 @@ namespace MDJMediaPlayer.ViewModels
     // Main ViewModel for the player
     public class MainViewModel : INotifyPropertyChanged
     {
+        private static readonly HashSet<string> AudioExtensions = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ".aac", ".flac", ".m4a", ".mp3", ".ogg", ".wav", ".wma"
+        };
+
         public ObservableCollection<MediaItem> Playlist { get; } = new();
 
         private MediaItem? _selected;
@@ -215,7 +221,8 @@ namespace MDJMediaPlayer.ViewModels
 
             if (dlg.ShowDialog() == true)
             {
-                MediaItem? firstSelectedItem = null;
+                MediaItem? fallbackSelectedItem = null;
+                MediaItem? preferredSelectedItem = null;
 
                 foreach (var file in dlg.FileNames)
                 {
@@ -224,7 +231,11 @@ namespace MDJMediaPlayer.ViewModels
 
                     if (existingItem != null)
                     {
-                        firstSelectedItem ??= existingItem;
+                        fallbackSelectedItem ??= existingItem;
+                        if (!IsAudioFile(existingItem.FilePath))
+                        {
+                            preferredSelectedItem ??= existingItem;
+                        }
                         continue;
                     }
 
@@ -235,16 +246,22 @@ namespace MDJMediaPlayer.ViewModels
                     };
 
                     Playlist.Add(item);
-                    firstSelectedItem ??= item;
+                    fallbackSelectedItem ??= item;
+                    if (!IsAudioFile(item.FilePath))
+                    {
+                        preferredSelectedItem ??= item;
+                    }
                 }
 
                 IsNewVideoAvailable = true;
 
-                if (firstSelectedItem != null)
+                var itemToPlay = preferredSelectedItem ?? fallbackSelectedItem;
+
+                if (itemToPlay != null)
                 {
                     Position = 0;
                     IsPlaying = true;
-                    Selected = firstSelectedItem;
+                    Selected = itemToPlay;
                 }
             }
         }
@@ -329,6 +346,16 @@ namespace MDJMediaPlayer.ViewModels
             {
                 Position = seconds;
             }
+        }
+
+        private static bool IsAudioFile(string filePath)
+        {
+            if (string.IsNullOrWhiteSpace(filePath))
+            {
+                return false;
+            }
+
+            return AudioExtensions.Contains(System.IO.Path.GetExtension(filePath));
         }
 
         public event PropertyChangedEventHandler? PropertyChanged;

@@ -36,6 +36,10 @@ namespace MDJMediaPlayer
         {
             ".aac", ".flac", ".m4a", ".mp3", ".ogg", ".wav", ".wma"
         };
+        private readonly HashSet<string> _videoExtensions = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ".3gp", ".avi", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".mts", ".m2ts", ".wmv", ".webm"
+        };
         private System.Windows.Threading.DispatcherTimer? _audioWaveTimer;
         private double[] _audioWaveEnvelope = Array.Empty<double>();
         private bool _isCurrentTrackAudioOnly = false;
@@ -132,6 +136,8 @@ namespace MDJMediaPlayer
             InitializeComponent();
             InitializeWaveOrbs();
             CachePlaybackVisualHomeParents();
+            var startupArgs = GetStartupArguments();
+            var hasExplicitStartupMedia = ContainsValidStartupMediaArgument(startupArgs);
 
             // Fade-in on startup
             this.Opacity = 0;
@@ -174,8 +180,8 @@ namespace MDJMediaPlayer
             ApplyTheme(ViewModel.Theme);
             UpdateAutoHideBehavior();
 
-            try { LoadPersistedMainPlaylist(); } catch { }
-            try { LoadStartupMediaFromArguments(); } catch { }
+            try { LoadPersistedMainPlaylist(allowInitialSelection: !hasExplicitStartupMedia); } catch { }
+            try { LoadStartupMediaFromArguments(startupArgs); } catch { }
         }
 
         private void CachePlaybackVisualHomeParents()
@@ -747,7 +753,7 @@ namespace MDJMediaPlayer
             writer.WriteLine("AeroTransparency=" + ViewModel.AeroTransparency.ToString(CultureInfo.InvariantCulture));
         }
 
-        private void LoadStartupMediaFromArguments()
+        private static string[] GetStartupArguments()
         {
             var startupArgs = (Application.Current as App)?.StartupArguments ?? Array.Empty<string>();
             if (startupArgs.Length == 0)
@@ -755,12 +761,33 @@ namespace MDJMediaPlayer
                 var environmentArgs = Environment.GetCommandLineArgs();
                 if (environmentArgs.Length <= 1)
                 {
-                    return;
+                    return Array.Empty<string>();
                 }
 
                 startupArgs = new string[environmentArgs.Length - 1];
                 Array.Copy(environmentArgs, 1, startupArgs, 0, startupArgs.Length);
             }
+
+            return startupArgs;
+        }
+
+        private bool ContainsValidStartupMediaArgument(IEnumerable<string> arguments)
+        {
+            foreach (var argument in arguments)
+            {
+                var filePath = NormalizeArgumentAsFilePath(argument);
+                if (!string.IsNullOrWhiteSpace(filePath) && File.Exists(filePath))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private void LoadStartupMediaFromArguments(string[]? startupArgs = null)
+        {
+            startupArgs ??= GetStartupArguments();
 
             var firstTarget = AddMediaFilesFromArguments(startupArgs, 0);
             if (firstTarget == null)
@@ -770,13 +797,23 @@ namespace MDJMediaPlayer
 
             // Opening the app with a specific media file is an explicit play action.
             ViewModel.Position = 0;
-            ViewModel.IsPlaying = true;
             ViewModel.Selected = firstTarget;
+            ViewModel.IsPlaying = true;
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (WindowState == WindowState.Minimized)
+                {
+                    WindowState = WindowState.Normal;
+                }
+
+                Activate();
+            }), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
         }
 
         private Models.MediaItem? AddMediaFilesFromArguments(string[] args, int startIndex)
         {
-            Models.MediaItem? firstItem = null;
+            Models.MediaItem? fallbackItem = null;
+            Models.MediaItem? preferredItem = null;
 
             for (var i = startIndex; i < args.Length; i++)
             {
@@ -789,7 +826,11 @@ namespace MDJMediaPlayer
                 var existingItem = FindPlaylistItemByPath(filePath);
                 if (existingItem != null)
                 {
-                    firstItem ??= existingItem;
+                    fallbackItem ??= existingItem;
+                    if (!IsKnownAudioFile(existingItem.FilePath))
+                    {
+                        preferredItem ??= existingItem;
+                    }
                     continue;
                 }
 
@@ -800,10 +841,14 @@ namespace MDJMediaPlayer
                 };
 
                 ViewModel.Playlist.Add(item);
-                firstItem ??= item;
+                fallbackItem ??= item;
+                if (!IsKnownAudioFile(item.FilePath))
+                {
+                    preferredItem ??= item;
+                }
             }
 
-            return firstItem;
+            return preferredItem ?? fallbackItem;
         }
 
         private Models.MediaItem? FindPlaylistItemByPath(string filePath)
@@ -870,7 +915,7 @@ namespace MDJMediaPlayer
             return candidate;
         }
 
-        private void LoadPersistedMainPlaylist()
+        private void LoadPersistedMainPlaylist(bool allowInitialSelection = true)
         {
             var path = GetVideoPlaylistPath();
             if (!File.Exists(path)) return;
@@ -895,7 +940,7 @@ namespace MDJMediaPlayer
                 });
             }
 
-            if (ViewModel.AutoplayMedia && ViewModel.Selected == null && ViewModel.Playlist.Count > 0)
+            if (allowInitialSelection && ViewModel.AutoplayMedia && ViewModel.Selected == null && ViewModel.Playlist.Count > 0)
             {
                 ViewModel.Selected = ViewModel.Playlist[0];
             }
@@ -998,6 +1043,8 @@ namespace MDJMediaPlayer
                         {
                             _audioWaveEnvelope = Array.Empty<double>();
                             StopWaveProbe();
+                            mediaElement.Visibility = Visibility.Visible;
+                            AudioWaveOverlay.Visibility = Visibility.Collapsed;
                         }
 
                         _isSwitchingSelectedMedia = true;
@@ -1149,10 +1196,12 @@ namespace MDJMediaPlayer
                     DebugStatus.Text = $"Source: {mediaElement.Source?.LocalPath}\nDuration: {mediaElement.NaturalDuration.TimeSpan}\nVideo: {mediaElement.NaturalVideoWidth}x{mediaElement.NaturalVideoHeight}";
                     mediaElement.Visibility = Visibility.Visible;
                     var isKnownAudio = IsKnownAudioFile(ViewModel.Selected?.FilePath);
+                    var isKnownVideo = IsKnownVideoFile(ViewModel.Selected?.FilePath);
                     _isCurrentTrackAudioOnly =
                         isKnownAudio ||
-                        mediaElement.NaturalVideoWidth == 0 ||
-                        mediaElement.NaturalVideoHeight == 0;
+                        (!isKnownVideo &&
+                         (mediaElement.NaturalVideoWidth == 0 ||
+                          mediaElement.NaturalVideoHeight == 0));
                     try
                     {
                         if (_isCurrentTrackAudioOnly && ViewModel.Selected != null)
@@ -1279,6 +1328,16 @@ namespace MDJMediaPlayer
             }
 
             return _audioExtensions.Contains(Path.GetExtension(filePath));
+        }
+
+        private bool IsKnownVideoFile(string? filePath)
+        {
+            if (string.IsNullOrWhiteSpace(filePath))
+            {
+                return false;
+            }
+
+            return _videoExtensions.Contains(Path.GetExtension(filePath));
         }
 
         private static bool CanUseWaveProbe(string filePath)

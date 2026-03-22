@@ -19,7 +19,8 @@ namespace MDJMediaPlayer
             {
                 var asm = Assembly.GetEntryAssembly() ?? Assembly.GetExecutingAssembly();
                 var name = asm.GetName().Name ?? "MDJ Media Player";
-                var version = asm.GetName().Version?.ToString() ?? "unknown";
+                var versionInfo = asm.GetName().Version;
+                var version = versionInfo == null ? "unknown" : versionInfo.ToString(3);
                 AboutNameText.Text = name;
                 AboutVersionText.Text = $"Version {version}";
             }
