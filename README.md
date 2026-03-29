@@ -16,6 +16,7 @@ Features:
 - Play/Pause, Stop, Next, Previous controls.
 - Seek bar, current time / total duration display.
 - Volume control.
+- Subtitle support (`.srt` / `.vtt`) with auto sidecar detection and manual load.
 - SFX
 
 Notes:
