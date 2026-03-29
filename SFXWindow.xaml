@@ -6,15 +6,22 @@
         xmlns:local="clr-namespace:MDJMediaPlayer"
         mc:Ignorable="d"
         Title="SFX" Height="360" Width="520" ResizeMode="NoResize"
-        WindowStyle="None" AllowsTransparency="False" Background="{DynamicResource WindowBackgroundBrush}">
-    <Grid>
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent">
+    <Border CornerRadius="12"
+            BorderBrush="{DynamicResource AeroBorderDarkBrush}"
+            BorderThickness="1"
+            Background="{DynamicResource WindowBackgroundBrush}"
+            SnapsToDevicePixels="True">
+    <Grid ClipToBounds="True">
         
         <Grid.RowDefinitions>
             <RowDefinition Height="38" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <Grid Grid.Row="0" Background="{DynamicResource CardAltBackgroundBrush}">
+        <Border Grid.Row="0"
+                Background="{DynamicResource CardAltBackgroundBrush}"
+                CornerRadius="11,11,0,0">
             <DockPanel Margin="4" LastChildFill="True">
                 <Menu DockPanel.Dock="Left" VerticalAlignment="Bottom">
                 <MenuItem Header="File">
@@ -38,7 +45,7 @@
                     <TextBlock Text="SFX" Foreground="#FFF" VerticalAlignment="Center" HorizontalAlignment="Center" FontSize="14" FontWeight="SemiBold" />
                 </Grid>
             </DockPanel>
-        </Grid>
+        </Border>
 
         <Grid Grid.Row="1">
             <ScrollViewer VerticalScrollBarVisibility="Auto">
@@ -76,5 +83,6 @@
             </TextBlock>
         </Grid>
     </Grid>
+    </Border>
 </Window>
 

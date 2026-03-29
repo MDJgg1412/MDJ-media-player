@@ -9,8 +9,8 @@
         Width="720"
         ResizeMode="CanMinimize"
         WindowStyle="None"
-        AllowsTransparency="False"
-        Background="{DynamicResource WindowBackgroundBrush}">
+        AllowsTransparency="True"
+        Background="Transparent">
     <Window.Resources>
         <Style x:Key="AeroTabControlStyle" TargetType="TabControl">
             <Setter Property="TabStripPlacement" Value="Top" />
@@ -28,15 +28,16 @@
                                     Background="{DynamicResource CardAltBackgroundBrush}"
                                     BorderBrush="{DynamicResource AeroBorderDarkBrush}"
                                     BorderThickness="1,1,1,0"
-                                    CornerRadius="8,8,0,0"
-                                    Padding="6,4,6,2">
-                                <TabPanel IsItemsHost="True" />
+                                    CornerRadius="2,2,0,0"
+                                    Padding="5,4,5,1">
+                                <TabPanel IsItemsHost="True"
+                                          Margin="0,0,0,-1" />
                             </Border>
                             <Border Grid.Row="1"
                                     Background="{DynamicResource CardBackgroundBrush}"
                                     BorderBrush="{DynamicResource AeroBorderDarkBrush}"
                                     BorderThickness="1,0,1,1"
-                                    CornerRadius="0,0,10,10"
+                                    CornerRadius="0,0,2,2"
                                     Padding="12">
                                 <ContentPresenter ContentSource="SelectedContent" />
                             </Border>
@@ -46,42 +47,76 @@
             </Setter>
         </Style>
         <Style TargetType="TabItem">
-            <Setter Property="Foreground" Value="White" />
+            <Setter Property="Foreground" Value="{DynamicResource AeroTextBrush}" />
             <Setter Property="Background" Value="{DynamicResource CardAltBackgroundBrush}" />
             <Setter Property="BorderBrush" Value="{DynamicResource AeroBorderDarkBrush}" />
-            <Setter Property="Padding" Value="10,3" />
-            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Padding" Value="8,2" />
+            <Setter Property="FontSize" Value="10" />
             <Setter Property="FontWeight" Value="SemiBold" />
-            <Setter Property="Margin" Value="0,0,6,0" />
-            <Setter Property="Height" Value="24" />
+            <Setter Property="FontFamily" Value="{DynamicResource AppFontFamilyDisplay}" />
+            <Setter Property="Margin" Value="0" />
+            <Setter Property="MinHeight" Value="22" />
+            <Setter Property="MinWidth" Value="70" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
             <Setter Property="Panel.ZIndex" Value="0" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="TabItem">
-                        <Border x:Name="Bd"
-                                Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="1,1,1,0"
-                                CornerRadius="6,6,0,0"
-                                Padding="{TemplateBinding Padding}">
-                            <Grid>
-                                <Border x:Name="Gloss"
-                                        Background="{DynamicResource AeroButtonGlossBrush}"
-                                        CornerRadius="5,5,0,0"
-                                        Margin="1"
-                                        Opacity="0.18" />
-                                <ContentPresenter HorizontalAlignment="Center"
-                                                  VerticalAlignment="Center"
-                                                  ContentSource="Header" />
-                            </Grid>
-                        </Border>
+                        <Grid SnapsToDevicePixels="True"
+                              ClipToBounds="False">
+                            <Border x:Name="Bd"
+                                    Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="2"
+                                    Padding="{TemplateBinding Padding}"
+                                    MinHeight="{TemplateBinding MinHeight}"
+                                    MinWidth="{TemplateBinding MinWidth}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="0" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="0" />
+                                    </Grid.ColumnDefinitions>
+                                    <Border Width="15"
+                                            Height="15"
+                                            CornerRadius="2"
+                                            Background="#4B3C24"
+                                            BorderBrush="#B9A264"
+                                            BorderThickness="1"
+                                            Visibility="Collapsed"
+                                            VerticalAlignment="Center">
+                                        <TextBlock Text="•"
+                                                   Foreground="#F6E3B5"
+                                                   FontSize="10"
+                                                   HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center" />
+                                    </Border>
+                                    <ContentPresenter Grid.Column="1"
+                                                      Margin="0"
+                                                      HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                      VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                                      ContentSource="Header" />
+                                    <Path Grid.Column="2"
+                                          Data="{StaticResource StopIcon}"
+                                          Stroke="#CDB879"
+                                          StrokeThickness="1.2"
+                                          Width="6"
+                                          Height="6"
+                                          Visibility="Collapsed"
+                                          VerticalAlignment="Center"
+                                          Opacity="0.8" />
+                                </Grid>
+                            </Border>
+                        </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsSelected" Value="True">
                                 <Setter TargetName="Bd" Property="Background" Value="{DynamicResource CardBackgroundBrush}" />
                                 <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource AeroBorderBrush}" />
                                 <Setter Property="Panel.ZIndex" Value="2" />
                             </Trigger>
-                            <Trigger Property="IsMouseOver" Value="True">
+                            <Trigger SourceName="Bd" Property="IsMouseOver" Value="True">
                                 <Setter TargetName="Bd" Property="Background" Value="{DynamicResource AeroItemHoverBrush}" />
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
@@ -104,6 +139,8 @@
         </Style>
         <Style x:Key="AppearanceSliderStyle" TargetType="Slider" BasedOn="{StaticResource {x:Type Slider}}">
             <Setter Property="IsEnabled" Value="True" />
+            <Setter Property="IsDirectionReversed" Value="False" />
+            <Setter Property="FlowDirection" Value="LeftToRight" />
             <Style.Triggers>
                 <DataTrigger Binding="{Binding Theme}" Value="Zune">
                     <Setter Property="IsEnabled" Value="False" />
@@ -219,141 +256,202 @@
         </Style>
     </Window.Resources>
 
-    <Grid>
-        <Grid.RowDefinitions>
-            <RowDefinition Height="38" />
-            <RowDefinition Height="*" />
-        </Grid.RowDefinitions>
+    <Border CornerRadius="12"
+            BorderBrush="{DynamicResource AeroBorderDarkBrush}"
+            BorderThickness="1"
+            Background="{DynamicResource WindowBackgroundBrush}"
+            SnapsToDevicePixels="True">
+        <Grid ClipToBounds="True">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="38" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
 
-        <Grid Grid.Row="0" Background="{DynamicResource CardAltBackgroundBrush}">
-            <DockPanel Margin="4" LastChildFill="True">
-                <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" VerticalAlignment="Center" Margin="0,0,8,0">
-                    <Button x:Name="CloseButton" Style="{StaticResource TitlebarButtonStyle}" Click="CloseButton_Click">
-                        <Path Data="{StaticResource CloseIcon}" Stroke="#FFF" StrokeThickness="1.5" Width="12" Height="12" />
-                    </Button>
-                </StackPanel>
+            <Border Grid.Row="0"
+                Background="{DynamicResource CardAltBackgroundBrush}"
+                CornerRadius="11,11,0,0">
+                <DockPanel Margin="4" LastChildFill="True">
+                    <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" VerticalAlignment="Center" Margin="0,0,8,0">
+                        <Button x:Name="CloseButton" Style="{StaticResource TitlebarButtonStyle}" Click="CloseButton_Click">
+                            <Path Data="{StaticResource CloseIcon}" Stroke="#FFF" StrokeThickness="1.5" Width="12" Height="12" />
+                        </Button>
+                    </StackPanel>
 
-                <Grid Background="Transparent" MouseDown="Titlebar_MouseDown">
-                    <TextBlock Text="Settings"
+                    <Grid Background="Transparent" MouseDown="Titlebar_MouseDown">
+                        <TextBlock Text="Settings"
                                Foreground="#FFF"
                                VerticalAlignment="Center"
                                HorizontalAlignment="Center"
                                FontSize="14"
                                FontWeight="SemiBold" />
-                </Grid>
-            </DockPanel>
-        </Grid>
+                    </Grid>
+                </DockPanel>
+            </Border>
 
-        <TabControl x:Name="SettingsTabs"
+            <TabControl x:Name="SettingsTabs"
                     Grid.Row="1"
                     Style="{StaticResource AeroTabControlStyle}"
                     Margin="12">
-            <TabItem Header="Settings">
-                <Grid>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="*" />
-                    </Grid.RowDefinitions>
-                    <StackPanel>
-                        <TextBlock Text="Settings"
+                <TabItem Header="Settings">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <StackPanel>
+                            <TextBlock Text="Settings"
                                    FontFamily="{DynamicResource AppFontFamilyDisplay}"
                                    Foreground="White"
                                    FontSize="18"
                                    FontWeight="SemiBold" />
-                        <TextBlock Text="Tune playback and appearance."
+                            <TextBlock Text="Tune playback and appearance."
                                    Foreground="White"
                                    FontSize="12"
                                    Margin="0,4,0,0" />
-                    </StackPanel>
-                    <Grid Grid.Row="1" Margin="0,12,0,0">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="12" />
-                            <ColumnDefinition Width="*" />
-                        </Grid.ColumnDefinitions>
-                        <Border Style="{StaticResource SettingsCard}" Grid.Column="0">
-                            <StackPanel>
-                                <TextBlock Text="Appearance"
+                        </StackPanel>
+                        <Grid Grid.Row="1" Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="12" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Border Style="{StaticResource SettingsCard}" Grid.Column="0">
+                                <StackPanel>
+                                    <TextBlock Text="Appearance"
                                            Foreground="White"
                                            FontWeight="SemiBold" />
-                                <TextBlock Text="Theme"
+                                    <TextBlock Text="Theme"
                                            Foreground="White"
                                            FontSize="12"
                                            Margin="0,6,0,0" />
-                                <ComboBox SelectedValuePath="Content"
+                                    <ComboBox SelectedValuePath="Content"
                                           SelectedValue="{Binding Theme, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
-                                    <ComboBoxItem Content="Aero" />
-                                    <ComboBoxItem Content="Zune" />
-                                </ComboBox>
-                                <TextBlock Text="Aero colors"
+                                        <ComboBoxItem Content="Aero" />
+                                        <ComboBoxItem Content="Zune" />
+                                    </ComboBox>
+                                    <TextBlock Text="Aero colors"
                                            Foreground="White"
                                            FontSize="12"
                                            Margin="0,10,0,0" />
-                                <Slider Minimum="0"
+                                    <Slider Minimum="0"
                                         Maximum="100"
                                         Style="{StaticResource AppearanceSliderStyle}"
                                         Value="{Binding AeroColorLevel, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                <TextBlock Text="Transparency"
+                                    <TextBlock Text="Transparency (higher = more transparent)"
                                            Foreground="White"
                                            FontSize="12"
                                            Margin="0,10,0,0" />
-                                <Slider Minimum="0"
+                                    <Slider Minimum="0"
                                         Maximum="100"
                                         Style="{StaticResource AppearanceSliderStyle}"
+                                        IsDirectionReversed="False"
                                         Value="{Binding AeroTransparency, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                <CheckBox Content="Auto hide controls"
+                                    <CheckBox Content="Auto hide controls"
                                           Margin="0,10,0,0"
                                           IsChecked="{Binding AutoHideControls, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                            </StackPanel>
-                        </Border>
-                        <Border Style="{StaticResource SettingsCard}" Grid.Column="2">
-                            <StackPanel>
-                                <TextBlock Text="Media Settings"
+                                </StackPanel>
+                            </Border>
+                            <Border Style="{StaticResource SettingsCard}" Grid.Column="2">
+                                <StackPanel>
+                                    <TextBlock Text="Media Settings"
                                            Foreground="White"
                                            FontWeight="SemiBold" />
-                                <TextBlock Text="Playback behavior."
+                                    <TextBlock Text="Playback behavior."
                                            Foreground="White"
                                            FontSize="12"
                                            Margin="0,6,0,0" />
-                                <CheckBox Content="Loop media"
-                                          IsChecked="{Binding LoopMedia, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                <CheckBox Content="Auto select if there is media"
+                                    <CheckBox Content="Auto select if there is media (Recommended)"
                                           IsChecked="{Binding AutoplayMedia, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                <CheckBox Content="Auto next"
+                                    <CheckBox Content="Loop media"
+                                          IsChecked="{Binding LoopMedia, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                    <CheckBox Content="Auto next"
                                           IsChecked="{Binding AutoNext, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                <CheckBox Content="Loop playlist"
+                                    <CheckBox Content="Loop playlist"
                                           IsChecked="{Binding LoopPlaylist, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                            </StackPanel>
-                        </Border>
+                                    <Border Height="1"
+                                        Margin="0,12,0,10"
+                                        Background="{DynamicResource AeroBorderDarkBrush}" />
+                                    <TextBlock Text="DJ settings"
+                                           Foreground="White"
+                                           FontWeight="SemiBold" />
+                                    <TextBlock Text="Decks"
+                                           Foreground="White"
+                                           FontSize="12"
+                                           Margin="0,6,0,0"
+                                           Opacity="0.8" />
+                                    <ComboBox SelectedValuePath="Content"
+                                          SelectedValue="{Binding DeckLayout, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
+                                        <ComboBoxItem Content="Default" />
+                                        <ComboBoxItem Content="2 Decks" />
+                                        <ComboBoxItem Content="4 Decks" />
+                                    </ComboBox>
+                                </StackPanel>
+                            </Border>
+                        </Grid>
                     </Grid>
-                </Grid>
-            </TabItem>
-            <TabItem Header="About">
-                <Border Style="{StaticResource SettingsCard}">
-                    <StackPanel>
-                        <TextBlock x:Name="AboutNameText"
+                </TabItem>
+                <TabItem Header="Check for update">
+                    <Border Style="{StaticResource SettingsCard}">
+                        <StackPanel>
+                            <TextBlock Text="Check for update"
+                                   FontFamily="{DynamicResource AppFontFamilyDisplay}"
+                                   Foreground="White"
+                                   FontSize="18"
+                                   FontWeight="SemiBold" />
+                            <TextBlock Text="Check if a newer version of MDJ Media Player is available."
+                                   Foreground="White"
+                                   FontSize="12"
+                                   Margin="0,6,0,0"
+                                   TextWrapping="Wrap" />
+                            <ProgressBar x:Name="UpdateCheckProgressBar"
+                                     Height="14"
+                                     Margin="0,12,0,0"
+                                     Minimum="0"
+                                     Maximum="100"
+                                     Value="0"
+                                     IsIndeterminate="False" />
+                            <Button x:Name="CheckForUpdateButton"
+                                Content="Check for update"
+                                Margin="0,12,0,0"
+                                Width="160"
+                                Click="CheckForUpdateButton_Click" />
+                            <TextBlock x:Name="UpdateCheckStatusText"
+                                   Text="Press 'Check for update' to start."
+                                   Foreground="{DynamicResource AeroSubTextBrush}"
+                                   FontSize="12"
+                                   TextWrapping="Wrap" />
+                            <CheckBox Content="Check for update at startup"
+                                  Margin="0,10,0,0"
+                                  IsChecked="{Binding CheckForUpdateAtStartup, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                            <CheckBox Content="Allow pre-releast update"
+                                  Margin="0,6,0,0"
+                                  IsChecked="{Binding AllowPreReleaseUpdate, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        </StackPanel>
+                    </Border>
+                </TabItem>
+                <TabItem Header="About">
+                    <Border Style="{StaticResource SettingsCard}">
+                        <StackPanel>
+                            <TextBlock x:Name="AboutNameText"
                                    FontFamily="{DynamicResource AppFontFamilyDisplay}"
                                    Text="MDJ Media Player"
                                    Foreground="White"
                                    FontSize="20"
                                    FontWeight="SemiBold" />
-                        <TextBlock x:Name="AboutVersionText"
+                            <TextBlock x:Name="AboutVersionText"
                                    Text="Version"
                                    Foreground="White"
                                    FontSize="12"
                                    Margin="0,6,0,0" />
-                        <TextBlock Text="A WPF media player with audio visualizations and playlist support."
+                            <TextBlock Text="A WPF media player with audio visualizations, projection, playlist support, SFX, and DJ deck system."
                                    Foreground="White"
                                    FontSize="12"
                                    Margin="0,10,0,0"
                                    TextWrapping="Wrap" />
-                    </StackPanel>
-                </Border>
-            </TabItem>
-        </TabControl>
-    </Grid>
+                        </StackPanel>
+                    </Border>
+                </TabItem>
+            </TabControl>
+        </Grid>
+    </Border>
 </Window>
-
-
-
-

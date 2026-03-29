@@ -5,6 +5,7 @@
     <Geometry x:Key="PlayIcon">M0,0 L0,20 L16,10 Z</Geometry>
     <Geometry x:Key="PauseIcon">M0,0 H4 V20 H0 Z M12,0 H16 V20 H12 Z</Geometry>
     <Geometry x:Key="StopIcon">M0,0 H16 V16 H0 Z</Geometry>
+    <Geometry x:Key="ReplayIcon">M12,5 V1 L7,6 L12,11 V7 C15.31,7 18,9.69 18,13 C18,14.01 17.75,14.97 17.3,15.8 L18.76,17.26 C19.54,16.03 20,15.06 20,14 C20,9.58 16.42,6 12,5 Z M6.7,11.2 L5.24,9.74 C4.46,10.97 4,11.94 4,13 C4,17.42 7.58,21 12,21 C14.21,21 16.21,20.1 17.66,18.66 L16.24,17.24 C15.15,18.32 13.63,19 12,19 C8.69,19 6,16.31 6,13 C6,11.99 6.25,11.03 6.7,10.2 Z</Geometry>
     <Geometry x:Key="NextIcon">M0,0 L0,20 L12,10 Z M14,0 H18 V20 H14 Z</Geometry>
     <Geometry x:Key="PrevIcon">M12,0 L12,20 L0,10 Z M14,0 H18 V20 H14 Z</Geometry>
     <Geometry x:Key="MinimizeIcon">M0,10 H16</Geometry>

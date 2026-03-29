@@ -7,8 +7,13 @@
         Title="Files List" Height="450" Width="500"
         PreviewKeyDown="Window_PreviewKeyDown"
         ResizeMode="CanMinimize"
-        WindowStyle="None" AllowsTransparency="False" Background="{DynamicResource WindowBackgroundBrush}">
-    <Grid>
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent">
+    <Border CornerRadius="12"
+            BorderBrush="{DynamicResource AeroBorderDarkBrush}"
+            BorderThickness="1"
+            Background="{DynamicResource WindowBackgroundBrush}"
+            SnapsToDevicePixels="True">
+        <Grid ClipToBounds="True">
             <Grid.RowDefinitions>
                 <RowDefinition Height="38" />
                 <RowDefinition Height="*" />
@@ -16,7 +21,9 @@
             </Grid.RowDefinitions>
 
             <!-- Titlebar -->
-            <Grid Grid.Row="0" Background="{DynamicResource CardAltBackgroundBrush}">
+            <Border Grid.Row="0"
+                    Background="{DynamicResource CardAltBackgroundBrush}"
+                    CornerRadius="11,11,0,0">
                 <DockPanel Margin="4" LastChildFill="True">
                     <!-- Window controls -->
                     <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" VerticalAlignment="Center" Margin="0,0,8,0">
@@ -33,7 +40,7 @@
                         <TextBlock Text="Files List" Foreground="#FFF" VerticalAlignment="Center" HorizontalAlignment="Center" FontSize="14" FontWeight="SemiBold" />
                     </Grid>
                 </DockPanel>
-            </Grid>
+            </Border>
 
             <!-- Content area -->
             <ListBox x:Name="PlaylistListBox"
@@ -52,5 +59,6 @@
                 <Button Content="Close" Width="62" Padding="6,2" FontSize="11" Click="CloseButton_Click" />
             </StackPanel>
         </Grid>
+    </Border>
 </Window>
 

@@ -5,10 +5,11 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+    <GenerateTemporaryTargetAssembly>false</GenerateTemporaryTargetAssembly>
     <AssemblyName>MDJMediaPlayer</AssemblyName>
-    <Version>2.1.1</Version>
-    <AssemblyVersion>2.1.1.0</AssemblyVersion>
-    <FileVersion>2.1.1.0</FileVersion>
+    <Version>2.2.0</Version>
+    <AssemblyVersion>2.2.0.0</AssemblyVersion>
+    <FileVersion>2.2.0.0</FileVersion>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
@@ -24,6 +25,21 @@
     <None Remove="artifacts\**\*" />
     <Page Remove="artifacts\**\*.xaml" />
   </ItemGroup>
+
+  <Target Name="RecoverMissingWpfGeneratedSources"
+          BeforeTargets="CoreCompile"
+          Condition="'$(MSBuildProjectName)' == 'MDJMediaPlayer' and (
+                     !Exists('$(IntermediateOutputPath)MainWindow.g.cs')
+                     or !Exists('$(IntermediateOutputPath)SettingsWindow.g.cs')
+                     or !Exists('$(IntermediateOutputPath)SFXWindow.g.cs')
+                     or !Exists('$(IntermediateOutputPath)MDJMediaPlayer_Content.g.cs')
+                     or !Exists('$(IntermediateOutputPath)GeneratedInternalTypeHelper.g.cs'))">
+    <Message Text="Recovering missing WPF generated sources in $(IntermediateOutputPath)." Importance="High" />
+    <Delete Files="$(IntermediateOutputPath)$(AssemblyName)_MarkupCompile.cache;$(IntermediateOutputPath)$(AssemblyName)_MarkupCompile.lref"
+            ContinueOnError="WarnAndContinue" />
+    <CallTarget Targets="MarkupCompilePass1;MarkupCompilePass2ForMainAssembly" />
+  </Target>
+
 </Project>
 
 

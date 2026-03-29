@@ -2,17 +2,22 @@ using MDJMediaPlayer.ViewModels;
 using System;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Effects;
 using System.IO;
 using System.Globalization;
 using System.Collections.Generic;
+using Microsoft.Win32;
+using System.Net;
 using System.Buffers;
 using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 using LibVLCSharp.Shared;
 using VlcMedia = LibVLCSharp.Shared.Media;
 using VlcMediaPlayer = LibVLCSharp.Shared.MediaPlayer;
+using WpfMediaPlayer = System.Windows.Media.MediaPlayer;
 
 namespace MDJMediaPlayer
 {
@@ -107,9 +112,26 @@ namespace MDJMediaPlayer
         private double _waveOrbClockSeconds = 0d;
         private double _lastWaveOrbViewportWidth = 0d;
         private double _lastWaveOrbViewportHeight = 0d;
+        private const int DjDeckPlayerCount = 4;
+        private readonly WpfMediaPlayer[] _djDeckPlayers = new WpfMediaPlayer[DjDeckPlayerCount];
+        private readonly string?[] _djDeckPlayerSources = new string?[DjDeckPlayerCount];
+        private readonly bool[] _djDeckPlayerReady = new bool[DjDeckPlayerCount];
+        private readonly bool[] _djDeckPlayerPendingPlay = new bool[DjDeckPlayerCount];
+        private const double MasterVolumeKeyStep = 0.05d;
         private Panel? _audioWaveOverlayHomeParent;
         private int _audioWaveOverlayHomeIndex = -1;
+        private Panel? _subtitleOverlayHomeParent;
+        private int _subtitleOverlayHomeIndex = -1;
         private bool _isLoadingSettings = false;
+        private readonly Dictionary<string, string> _subtitleOverridesByMediaPath = new(StringComparer.OrdinalIgnoreCase);
+        private readonly List<SubtitleCue> _subtitleCues = new();
+        private readonly HashSet<string> _subtitleExtensions = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ".srt", ".vtt"
+        };
+        private string? _subtitlePath;
+        private string? _subtitleMediaPath;
+        private bool _subtitlesEnabled = true;
         // (No external fallback initialized) - keep MediaElement primary
 
         private sealed class WaveOrbState
@@ -131,11 +153,20 @@ namespace MDJMediaPlayer
             public double HueOffset;
         }
 
+        private sealed class SubtitleCue
+        {
+            public required TimeSpan Start { get; init; }
+            public required TimeSpan End { get; init; }
+            public required string Text { get; init; }
+        }
+
         public MainWindow()
         {
             InitializeComponent();
+            InitializeDjDeckPlayers();
             InitializeWaveOrbs();
             CachePlaybackVisualHomeParents();
+            UpdateSubtitleControls();
             var startupArgs = GetStartupArguments();
             var hasExplicitStartupMedia = ContainsValidStartupMediaArgument(startupArgs);
 
@@ -190,6 +221,42 @@ namespace MDJMediaPlayer
             {
                 _audioWaveOverlayHomeParent = parent;
                 _audioWaveOverlayHomeIndex = parent.Children.IndexOf(AudioWaveOverlay);
+            }
+
+            if (SubtitleOverlay.Parent is Panel subtitleParent)
+            {
+                _subtitleOverlayHomeParent = subtitleParent;
+                _subtitleOverlayHomeIndex = subtitleParent.Children.IndexOf(SubtitleOverlay);
+            }
+        }
+
+        private void InitializeDjDeckPlayers()
+        {
+            for (var i = 0; i < _djDeckPlayers.Length; i++)
+            {
+                var player = new WpfMediaPlayer();
+                var deckIndex = i;
+
+                player.MediaOpened += (_, _) => Dispatcher.Invoke(() => HandleDjDeckMediaOpened(deckIndex));
+                player.MediaEnded += (_, _) => Dispatcher.Invoke(() => HandleDjDeckMediaEnded(deckIndex));
+                player.MediaFailed += (_, e) => Dispatcher.Invoke(() => HandleDjDeckMediaFailed(deckIndex, e.ErrorException));
+                player.Volume = 0d;
+
+                _djDeckPlayers[i] = player;
+            }
+        }
+
+        private void DisposeDjDeckPlayers()
+        {
+            for (var i = 0; i < _djDeckPlayers.Length; i++)
+            {
+                try
+                {
+                    _djDeckPlayerPendingPlay[i] = false;
+                    _djDeckPlayerReady[i] = false;
+                    _djDeckPlayers[i]?.Close();
+                }
+                catch { }
             }
         }
 
@@ -264,11 +331,12 @@ namespace MDJMediaPlayer
 
                 if (transparencyEnabled)
                 {
-                    transparencyFactor = Math.Clamp(1d - (transparencyLevel * 0.75d), 0.2d, 1d);
+                    // Higher slider value => more transparency (lower alpha).
+                    transparencyFactor = Math.Clamp(1d - (transparencyLevel * 0.80d), 0.20d, 1d);
                     controlPanelOpacity = 1d;
-                    controlPanelShadowOpacity = Math.Clamp(0.55d - (transparencyLevel * 0.45d), 0.08d, 0.55d);
+                    controlPanelShadowOpacity = Math.Clamp(0.55d - (transparencyLevel * 0.40d), 0.10d, 0.55d);
                     var hazeLevel = transparencyLevel;
-                    controlPanelHazeOpacity = Math.Clamp(hazeLevel * 0.7d, 0d, 0.7d);
+                    controlPanelHazeOpacity = Math.Clamp(hazeLevel * 0.65d, 0d, 0.65d);
                 }
                 else
                 {
@@ -395,7 +463,7 @@ namespace MDJMediaPlayer
 
                 System.Windows.Media.Color EnsureOpaque(System.Windows.Media.Color color)
                 {
-                    if (transparencyEnabled || color.A == 255)
+                    if (color.A == 255)
                     {
                         return color;
                     }
@@ -570,6 +638,7 @@ namespace MDJMediaPlayer
             try { _audioWaveTimer?.Stop(); } catch { }
             try { StopWaveProbe(); } catch { }
             try { DisposeWaveProbe(); } catch { }
+            try { DisposeDjDeckPlayers(); } catch { }
             try { SavePersistedSettings(); } catch { }
             try { SavePersistedMainPlaylist(); } catch { }
             try { _sfxWindow?.SavePersisted(); } catch { }
@@ -602,6 +671,12 @@ namespace MDJMediaPlayer
 
         private void FilesListButton_Click(object sender, RoutedEventArgs e)
         {
+            if (ViewModel.IsDjDeckLayout)
+            {
+                CloseFilesListWindows();
+                return;
+            }
+
             var filesListWindow = new FilesListWindow(ViewModel);
             filesListWindow.Owner = this;
             filesListWindow.ShowInTaskbar = false;
@@ -667,6 +742,12 @@ namespace MDJMediaPlayer
                         continue;
                     }
 
+                    if (string.Equals(key, "DeckLayout", StringComparison.OrdinalIgnoreCase))
+                    {
+                        ViewModel.DeckLayout = value;
+                        continue;
+                    }
+
                     if (string.Equals(key, "LoopMedia", StringComparison.OrdinalIgnoreCase))
                     {
                         if (bool.TryParse(value, out var loopMedia))
@@ -712,6 +793,24 @@ namespace MDJMediaPlayer
                         continue;
                     }
 
+                    if (string.Equals(key, "CheckForUpdateAtStartup", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (bool.TryParse(value, out var checkForUpdateAtStartup))
+                        {
+                            ViewModel.CheckForUpdateAtStartup = checkForUpdateAtStartup;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "AllowPreReleaseUpdate", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (bool.TryParse(value, out var allowPreReleaseUpdate))
+                        {
+                            ViewModel.AllowPreReleaseUpdate = allowPreReleaseUpdate;
+                        }
+                        continue;
+                    }
+
 
                     if (string.Equals(key, "AeroColorLevel", StringComparison.OrdinalIgnoreCase))
                     {
@@ -744,11 +843,14 @@ namespace MDJMediaPlayer
             using var writer = new StreamWriter(path, false);
             writer.WriteLine("# MDJ Media Player settings");
             writer.WriteLine("Theme=" + ViewModel.Theme);
+            writer.WriteLine("DeckLayout=" + ViewModel.DeckLayout);
             writer.WriteLine("LoopMedia=" + ViewModel.LoopMedia);
             writer.WriteLine("AutoplayMedia=" + ViewModel.AutoplayMedia);
             writer.WriteLine("AutoNext=" + ViewModel.AutoNext);
             writer.WriteLine("LoopPlaylist=" + ViewModel.LoopPlaylist);
             writer.WriteLine("AutoHideControls=" + ViewModel.AutoHideControls);
+            writer.WriteLine("CheckForUpdateAtStartup=" + ViewModel.CheckForUpdateAtStartup);
+            writer.WriteLine("AllowPreReleaseUpdate=" + ViewModel.AllowPreReleaseUpdate);
             writer.WriteLine("AeroColorLevel=" + ViewModel.AeroColorLevel.ToString(CultureInfo.InvariantCulture));
             writer.WriteLine("AeroTransparency=" + ViewModel.AeroTransparency.ToString(CultureInfo.InvariantCulture));
         }
@@ -796,7 +898,12 @@ namespace MDJMediaPlayer
             }
 
             // Opening the app with a specific media file is an explicit play action.
+            ViewModel.IsPlaying = false;
             ViewModel.Position = 0;
+            if (!ReferenceEquals(ViewModel.Selected, firstTarget))
+            {
+                ViewModel.Selected = null;
+            }
             ViewModel.Selected = firstTarget;
             ViewModel.IsPlaying = true;
             Dispatcher.BeginInvoke(new Action(() =>
@@ -1000,6 +1107,7 @@ namespace MDJMediaPlayer
             _isCurrentTrackAudioOnly = false;
             _audioWaveEnvelope = Array.Empty<double>();
             StopWaveProbe();
+            ClearSubtitleCues();
             UpdateAudioWaveVisibility();
             DebugStatus.Text = "No media loaded.";
         }
@@ -1008,6 +1116,20 @@ namespace MDJMediaPlayer
         {
             if (e.PropertyName == nameof(ViewModel.Selected))
             {
+                if (ViewModel.IsDjDeckLayout)
+                {
+                    _isCurrentTrackAudioOnly = false;
+                    _audioWaveEnvelope = Array.Empty<double>();
+                    StopWaveProbe();
+                    mediaElement.Visibility = Visibility.Collapsed;
+                    DebugStatus.Text = ViewModel.Selected != null
+                        ? "DJ Focus: " + ViewModel.Selected.FilePath
+                        : "DJ mode ready.";
+                    UpdateSubtitleForCurrentPosition(force: true);
+                    UpdateAudioWaveVisibility();
+                    return;
+                }
+
                 try
                 {
                     if (ViewModel.Selected != null)
@@ -1022,9 +1144,12 @@ namespace MDJMediaPlayer
                             _isCurrentTrackAudioOnly = false;
                             _audioWaveEnvelope = Array.Empty<double>();
                             StopWaveProbe();
+                            ClearSubtitleCues();
                             UpdateAudioWaveVisibility();
                             return;
                         }
+
+                        TryLoadSubtitlesForMedia(selectedPath);
 
                         _isCurrentTrackAudioOnly = IsKnownAudioFile(selectedPath);
                         if (_isCurrentTrackAudioOnly)
@@ -1051,7 +1176,7 @@ namespace MDJMediaPlayer
                         mediaElement.Stop();
                         mediaElement.Source = new Uri(selectedPath, UriKind.Absolute);
                         mediaElement.Position = TimeSpan.FromSeconds(ViewModel.Position);
-                        mediaElement.Volume = ViewModel.Volume;
+                        mediaElement.Volume = ViewModel.EffectivePlaybackVolume;
                         if (ViewModel.IsPlaying)
                         {
                             mediaElement.Play();
@@ -1078,6 +1203,7 @@ namespace MDJMediaPlayer
                         _isCurrentTrackAudioOnly = false;
                         _audioWaveEnvelope = Array.Empty<double>();
                         StopWaveProbe();
+                        ClearSubtitleCues();
 
                         if (ViewModel.Playlist.Count == 0)
                         {
@@ -1095,22 +1221,49 @@ namespace MDJMediaPlayer
                     _isCurrentTrackAudioOnly = false;
                     _audioWaveEnvelope = Array.Empty<double>();
                     StopWaveProbe();
+                    ClearSubtitleCues();
                     UpdateAudioWaveVisibility();
                 }
             }
 
             if (e.PropertyName == nameof(ViewModel.IsPlaying))
             {
+                if (ViewModel.IsDjDeckLayout)
+                {
+                    UpdateAudioWaveVisibility();
+                    UpdateSubtitleForCurrentPosition(force: true);
+                    return;
+                }
+
                 if (ViewModel.IsPlaying) mediaElement.Play(); else mediaElement.Pause();
                 SyncWaveProbePlayState(ViewModel.IsPlaying);
+                UpdateSubtitleForCurrentPosition(force: true);
                 UpdateAudioWaveVisibility();
             }
-            if (e.PropertyName == nameof(ViewModel.Volume))
+            if (e.PropertyName == nameof(ViewModel.Volume) || e.PropertyName == nameof(ViewModel.EffectivePlaybackVolume))
             {
-                mediaElement.Volume = ViewModel.Volume;
+                if (!ViewModel.IsDjDeckLayout)
+                {
+                    mediaElement.Volume = ViewModel.EffectivePlaybackVolume;
+                }
+
+                UpdateAllDjDeckPlayerVolumes();
+            }
+            if (e.PropertyName == nameof(ViewModel.DeckAFader) ||
+                e.PropertyName == nameof(ViewModel.DeckBFader) ||
+                e.PropertyName == nameof(ViewModel.DeckCFader) ||
+                e.PropertyName == nameof(ViewModel.DeckDFader) ||
+                e.PropertyName == nameof(ViewModel.Crossfader))
+            {
+                UpdateAllDjDeckPlayerVolumes();
             }
             if (e.PropertyName == nameof(ViewModel.Position))
             {
+                if (ViewModel.IsDjDeckLayout)
+                {
+                    return;
+                }
+
                 if (_isUserDraggingPosition || _suppressPositionSync)
                 {
                     return;
@@ -1122,6 +1275,7 @@ namespace MDJMediaPlayer
                     {
                         mediaElement.Position = pos;
                         SyncWaveProbePosition(true);
+                        UpdateSubtitleForCurrentPosition(force: true);
                     }
                 }
                 catch { }
@@ -1129,6 +1283,24 @@ namespace MDJMediaPlayer
             if (e.PropertyName == nameof(ViewModel.Theme))
             {
                 ApplyTheme(ViewModel.Theme);
+                if (!_isLoadingSettings)
+                {
+                    try { SavePersistedSettings(); } catch { }
+                }
+            }
+            if (e.PropertyName == nameof(ViewModel.DeckLayout))
+            {
+                UpdateAudioWaveVisibility();
+                UpdateAutoHideBehavior();
+                if (ViewModel.IsDjDeckLayout)
+                {
+                    CloseFilesListWindows();
+                    EnterDjDeckModeRuntime();
+                }
+                else
+                {
+                    ExitDjDeckModeRuntime();
+                }
                 if (!_isLoadingSettings)
                 {
                     try { SavePersistedSettings(); } catch { }
@@ -1152,6 +1324,20 @@ namespace MDJMediaPlayer
             if (e.PropertyName == nameof(ViewModel.AutoHideControls))
             {
                 UpdateAutoHideBehavior();
+                if (!_isLoadingSettings)
+                {
+                    try { SavePersistedSettings(); } catch { }
+                }
+            }
+            if (e.PropertyName == nameof(ViewModel.CheckForUpdateAtStartup))
+            {
+                if (!_isLoadingSettings)
+                {
+                    try { SavePersistedSettings(); } catch { }
+                }
+            }
+            if (e.PropertyName == nameof(ViewModel.AllowPreReleaseUpdate))
+            {
                 if (!_isLoadingSettings)
                 {
                     try { SavePersistedSettings(); } catch { }
@@ -1193,7 +1379,15 @@ namespace MDJMediaPlayer
                 if (mediaElement.NaturalDuration.HasTimeSpan)
                 {
                     ViewModel.Duration = mediaElement.NaturalDuration.TimeSpan.TotalSeconds;
+                    if (ViewModel.Selected != null)
+                    {
+                        ViewModel.Selected.Duration = mediaElement.NaturalDuration.TimeSpan;
+                    }
                     DebugStatus.Text = $"Source: {mediaElement.Source?.LocalPath}\nDuration: {mediaElement.NaturalDuration.TimeSpan}\nVideo: {mediaElement.NaturalVideoWidth}x{mediaElement.NaturalVideoHeight}";
+                    if (_subtitleCues.Count > 0)
+                    {
+                        ShowSubtitleLoadedStatusInControlBox();
+                    }
                     mediaElement.Visibility = Visibility.Visible;
                     var isKnownAudio = IsKnownAudioFile(ViewModel.Selected?.FilePath);
                     var isKnownVideo = IsKnownVideoFile(ViewModel.Selected?.FilePath);
@@ -1247,12 +1441,15 @@ namespace MDJMediaPlayer
                 {
                     mediaElement.Play();
                 }
+
+                UpdateSubtitleForCurrentPosition(force: true);
             }
             catch (Exception ex)
             {
                 _isSwitchingSelectedMedia = false;
                 MessageBox.Show("An error occurred while opening media: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 DebugStatus.Text = "Error: " + ex.Message;
+                UpdateSubtitleForCurrentPosition(force: true);
             }
         }
 
@@ -1272,6 +1469,7 @@ namespace MDJMediaPlayer
                     mediaElement.Play();
                     ViewModel.IsPlaying = true;
                     SyncWaveProbePosition(true);
+                    UpdateSubtitleForCurrentPosition(force: true);
                 }
                 catch { }
                 return;
@@ -1294,6 +1492,7 @@ namespace MDJMediaPlayer
             catch { }
 
             ViewModel.IsPlaying = false;
+            UpdateSubtitleForCurrentPosition(force: true);
         }
 
         private void MediaElement_MediaFailed(object? sender, ExceptionRoutedEventArgs e)
@@ -1310,6 +1509,7 @@ namespace MDJMediaPlayer
             _isCurrentTrackAudioOnly = false;
             _audioWaveEnvelope = Array.Empty<double>();
             StopWaveProbe();
+            UpdateSubtitleForCurrentPosition(force: true);
             UpdateAudioWaveVisibility();
 
             if (ViewModel.AutoNext && ViewModel.TryPlayNextValid(wrap: ViewModel.LoopPlaylist))
@@ -1340,6 +1540,888 @@ namespace MDJMediaPlayer
             return _videoExtensions.Contains(Path.GetExtension(filePath));
         }
 
+        private void LoadSubtitleButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (ViewModel.IsDjDeckLayout)
+            {
+                return;
+            }
+
+            var initialDirectory = Path.GetDirectoryName(ViewModel.Selected?.FilePath ?? string.Empty);
+            var dialog = new OpenFileDialog
+            {
+                Multiselect = false,
+                Filter = "Subtitle Files|*.srt;*.vtt|All Files|*.*",
+                CheckFileExists = true
+            };
+
+            if (!string.IsNullOrWhiteSpace(initialDirectory) && Directory.Exists(initialDirectory))
+            {
+                dialog.InitialDirectory = initialDirectory;
+            }
+
+            if (dialog.ShowDialog() != true)
+            {
+                return;
+            }
+
+            var selectedMediaPath = ViewModel.Selected?.FilePath;
+            if (!TryLoadSubtitleFile(dialog.FileName, selectedMediaPath, showErrors: true))
+            {
+                return;
+            }
+
+            if (!string.IsNullOrWhiteSpace(selectedMediaPath))
+            {
+                _subtitleOverridesByMediaPath[selectedMediaPath] = dialog.FileName;
+                _subtitleMediaPath = selectedMediaPath;
+            }
+        }
+
+        private void SubtitleToggleButton_Click(object sender, RoutedEventArgs e)
+        {
+            ToggleSubtitleEnabled();
+        }
+
+        private bool ToggleSubtitleEnabled()
+        {
+            if (_subtitleCues.Count == 0)
+            {
+                _subtitlesEnabled = true;
+                UpdateSubtitleControls();
+                return false;
+            }
+
+            _subtitlesEnabled = !_subtitlesEnabled;
+            UpdateSubtitleControls();
+            UpdateSubtitleForCurrentPosition(force: true);
+            return true;
+        }
+
+        private void TryLoadSubtitlesForMedia(string? mediaPath)
+        {
+            if (string.IsNullOrWhiteSpace(mediaPath))
+            {
+                ClearSubtitleCues();
+                return;
+            }
+
+            if (_subtitleOverridesByMediaPath.TryGetValue(mediaPath, out var overridePath) && File.Exists(overridePath))
+            {
+                if (TryLoadSubtitleFile(overridePath, mediaPath, showErrors: false))
+                {
+                    return;
+                }
+            }
+
+            var sidecarPath = FindSidecarSubtitlePath(mediaPath);
+            if (!string.IsNullOrWhiteSpace(sidecarPath) && TryLoadSubtitleFile(sidecarPath, mediaPath, showErrors: false))
+            {
+                return;
+            }
+
+            ClearSubtitleCues();
+            _subtitleMediaPath = mediaPath;
+        }
+
+        private string? FindSidecarSubtitlePath(string mediaPath)
+        {
+            var directory = Path.GetDirectoryName(mediaPath);
+            var baseName = Path.GetFileNameWithoutExtension(mediaPath);
+            if (string.IsNullOrWhiteSpace(directory) || string.IsNullOrWhiteSpace(baseName))
+            {
+                return null;
+            }
+
+            foreach (var extension in _subtitleExtensions)
+            {
+                var candidate = Path.Combine(directory, baseName + extension);
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
+            }
+
+            return null;
+        }
+
+        private bool TryLoadSubtitleFile(string subtitlePath, string? mediaPath, bool showErrors)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(subtitlePath) || !File.Exists(subtitlePath))
+                {
+                    if (showErrors)
+                    {
+                        MessageBox.Show("Subtitle file not found.", "Subtitle Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    }
+
+                    ClearSubtitleCues();
+                    _subtitleMediaPath = mediaPath;
+                    return false;
+                }
+
+                var extension = Path.GetExtension(subtitlePath);
+                if (!_subtitleExtensions.Contains(extension))
+                {
+                    if (showErrors)
+                    {
+                        MessageBox.Show("Unsupported subtitle format. Use .srt or .vtt.", "Subtitle Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    }
+                    return false;
+                }
+
+                var rawContent = File.ReadAllText(subtitlePath);
+                var cues = ParseSubtitleCues(rawContent);
+                if (cues.Count == 0)
+                {
+                    if (showErrors)
+                    {
+                        MessageBox.Show("No subtitle cues were found in this file.", "Subtitle Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    }
+
+                    ClearSubtitleCues();
+                    _subtitleMediaPath = mediaPath;
+                    return false;
+                }
+
+                _subtitleCues.Clear();
+                _subtitleCues.AddRange(cues);
+                _subtitlePath = subtitlePath;
+                _subtitleMediaPath = mediaPath;
+                _subtitlesEnabled = true;
+                UpdateSubtitleControls();
+                UpdateSubtitleForCurrentPosition(force: true);
+                ShowSubtitleLoadedStatusInControlBox();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                if (showErrors)
+                {
+                    MessageBox.Show("Unable to read subtitle file: " + ex.Message, "Subtitle Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+
+                ClearSubtitleCues();
+                _subtitleMediaPath = mediaPath;
+                return false;
+            }
+        }
+
+        private static List<SubtitleCue> ParseSubtitleCues(string subtitleContent)
+        {
+            var cues = new List<SubtitleCue>();
+            if (string.IsNullOrWhiteSpace(subtitleContent))
+            {
+                return cues;
+            }
+
+            var normalized = subtitleContent.Replace("\r\n", "\n").Replace('\r', '\n');
+            var blocks = Regex.Split(normalized, @"\n\s*\n");
+            foreach (var block in blocks)
+            {
+                var trimmedBlock = block.Trim();
+                if (string.IsNullOrWhiteSpace(trimmedBlock))
+                {
+                    continue;
+                }
+
+                var lines = trimmedBlock.Split('\n');
+                if (lines.Length == 0)
+                {
+                    continue;
+                }
+
+                var first = lines[0].Trim();
+                if (first.StartsWith("WEBVTT", StringComparison.OrdinalIgnoreCase) ||
+                    first.StartsWith("NOTE", StringComparison.OrdinalIgnoreCase) ||
+                    first.StartsWith("STYLE", StringComparison.OrdinalIgnoreCase) ||
+                    first.StartsWith("REGION", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var timingIndex = -1;
+                for (var i = 0; i < lines.Length && i < 3; i++)
+                {
+                    if (lines[i].Contains("-->", StringComparison.Ordinal))
+                    {
+                        timingIndex = i;
+                        break;
+                    }
+                }
+
+                if (timingIndex < 0)
+                {
+                    continue;
+                }
+
+                if (!TryParseSubtitleRange(lines[timingIndex], out var start, out var end))
+                {
+                    continue;
+                }
+
+                if (timingIndex + 1 >= lines.Length)
+                {
+                    continue;
+                }
+
+                var cueText = NormalizeSubtitleText(string.Join("\n", lines[(timingIndex + 1)..]));
+                if (string.IsNullOrWhiteSpace(cueText))
+                {
+                    continue;
+                }
+
+                cues.Add(new SubtitleCue
+                {
+                    Start = start,
+                    End = end,
+                    Text = cueText
+                });
+            }
+
+            cues.Sort((a, b) => a.Start.CompareTo(b.Start));
+            return cues;
+        }
+
+        private static bool TryParseSubtitleRange(string timingLine, out TimeSpan start, out TimeSpan end)
+        {
+            start = TimeSpan.Zero;
+            end = TimeSpan.Zero;
+            if (string.IsNullOrWhiteSpace(timingLine))
+            {
+                return false;
+            }
+
+            var delimiterIndex = timingLine.IndexOf("-->", StringComparison.Ordinal);
+            if (delimiterIndex <= 0)
+            {
+                return false;
+            }
+
+            var startToken = timingLine[..delimiterIndex].Trim();
+            var endToken = timingLine[(delimiterIndex + 3)..].Trim();
+            if (string.IsNullOrWhiteSpace(startToken) || string.IsNullOrWhiteSpace(endToken))
+            {
+                return false;
+            }
+
+            var endTokenParts = endToken.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (endTokenParts.Length == 0)
+            {
+                return false;
+            }
+
+            if (!TryParseSubtitleTimestamp(startToken, out start))
+            {
+                return false;
+            }
+
+            if (!TryParseSubtitleTimestamp(endTokenParts[0], out end))
+            {
+                return false;
+            }
+
+            if (end < start)
+            {
+                var swap = start;
+                start = end;
+                end = swap;
+            }
+
+            return true;
+        }
+
+        private static bool TryParseSubtitleTimestamp(string token, out TimeSpan value)
+        {
+            value = TimeSpan.Zero;
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                return false;
+            }
+
+            var normalized = token.Trim().Replace(',', '.');
+            var parts = normalized.Split(':', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length < 2 || parts.Length > 3)
+            {
+                return false;
+            }
+
+            if (!double.TryParse(parts[^1], NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds))
+            {
+                return false;
+            }
+
+            int hours;
+            int minutes;
+            if (parts.Length == 3)
+            {
+                if (!int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out hours) ||
+                    !int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out minutes))
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                hours = 0;
+                if (!int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out minutes))
+                {
+                    return false;
+                }
+            }
+
+            if (hours < 0 || minutes < 0 || seconds < 0)
+            {
+                return false;
+            }
+
+            value = TimeSpan.FromHours(hours) + TimeSpan.FromMinutes(minutes) + TimeSpan.FromSeconds(seconds);
+            return true;
+        }
+
+        private static string NormalizeSubtitleText(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return string.Empty;
+            }
+
+            var normalized = text.Replace("\\N", "\n").Replace("\\n", "\n");
+            normalized = Regex.Replace(normalized, "<[^>]+>", string.Empty);
+            normalized = WebUtility.HtmlDecode(normalized);
+            return normalized.Trim();
+        }
+
+        private void ClearSubtitleCues()
+        {
+            _subtitleCues.Clear();
+            _subtitlePath = null;
+            _subtitleMediaPath = null;
+            SubtitleTextBlock.Text = string.Empty;
+            SubtitleOverlay.Visibility = Visibility.Collapsed;
+            UpdateSubtitleControls();
+        }
+
+        private void ShowSubtitleLoadedStatusInControlBox()
+        {
+            const string marker = "(Subtittle has been loaded)";
+            var existingStatus = DebugStatus.Text ?? string.Empty;
+            var cleanedStatus = RemoveSubtitleStatusMarker(existingStatus);
+
+            DebugStatus.Text = string.IsNullOrWhiteSpace(cleanedStatus)
+                ? marker
+                : cleanedStatus + "\n" + marker;
+        }
+
+        private static string RemoveSubtitleStatusMarker(string statusText)
+        {
+            const string marker = "(Subtittle has been loaded)";
+            if (string.IsNullOrWhiteSpace(statusText))
+            {
+                return string.Empty;
+            }
+
+            var normalized = statusText.Replace("\r\n", "\n").Replace('\r', '\n');
+            var lines = normalized.Split('\n');
+            var filteredLines = new List<string>(lines.Length);
+            foreach (var line in lines)
+            {
+                if (string.Equals(line.Trim(), marker, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                filteredLines.Add(line);
+            }
+
+            return string.Join("\n", filteredLines).TrimEnd();
+        }
+
+        private void UpdateSubtitleControls()
+        {
+            if (_subtitleCues.Count == 0)
+            {
+                SubtitleToggleButton.Content = "CC";
+                SubtitleToggleButton.IsEnabled = false;
+                LoadSubtitleButton.ToolTip = "Load .srt or .vtt subtitles";
+                return;
+            }
+
+            SubtitleToggleButton.Content = _subtitlesEnabled ? "CC On" : "CC Off";
+            SubtitleToggleButton.IsEnabled = true;
+            LoadSubtitleButton.ToolTip = _subtitlePath == null
+                ? "Load .srt or .vtt subtitles"
+                : "Loaded subtitle: " + Path.GetFileName(_subtitlePath);
+        }
+
+        private void UpdateSubtitleForCurrentPosition(bool force)
+        {
+            if (!_subtitlesEnabled || _subtitleCues.Count == 0 || ViewModel.IsDjDeckLayout || mediaElement.Source == null)
+            {
+                SubtitleTextBlock.Text = string.Empty;
+                SubtitleOverlay.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            var selectedMediaPath = ViewModel.Selected?.FilePath;
+            if (!string.IsNullOrWhiteSpace(_subtitleMediaPath) &&
+                !string.IsNullOrWhiteSpace(selectedMediaPath) &&
+                !string.Equals(_subtitleMediaPath, selectedMediaPath, StringComparison.OrdinalIgnoreCase))
+            {
+                SubtitleTextBlock.Text = string.Empty;
+                SubtitleOverlay.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            TimeSpan position;
+            try
+            {
+                position = mediaElement.Position;
+            }
+            catch
+            {
+                SubtitleTextBlock.Text = string.Empty;
+                SubtitleOverlay.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            var cue = FindSubtitleCue(position);
+            var nextText = cue?.Text ?? string.Empty;
+            if (!force && string.Equals(SubtitleTextBlock.Text, nextText, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            SubtitleTextBlock.Text = nextText;
+            SubtitleOverlay.Visibility = string.IsNullOrWhiteSpace(nextText) ? Visibility.Collapsed : Visibility.Visible;
+        }
+
+        private SubtitleCue? FindSubtitleCue(TimeSpan position)
+        {
+            var ticks = position.Ticks;
+            var low = 0;
+            var high = _subtitleCues.Count - 1;
+
+            while (low <= high)
+            {
+                var mid = low + ((high - low) / 2);
+                var cue = _subtitleCues[mid];
+                if (ticks < cue.Start.Ticks)
+                {
+                    high = mid - 1;
+                    continue;
+                }
+
+                if (ticks > cue.End.Ticks)
+                {
+                    low = mid + 1;
+                    continue;
+                }
+
+                return cue;
+            }
+
+            return null;
+        }
+
+        private void EnterDjDeckModeRuntime()
+        {
+            try { mediaElement.Stop(); } catch { }
+            try { mediaElement.Source = null; } catch { }
+            _isSwitchingSelectedMedia = false;
+            mediaElement.Visibility = Visibility.Collapsed;
+            _isCurrentTrackAudioOnly = false;
+            _audioWaveEnvelope = Array.Empty<double>();
+            StopWaveProbe();
+            UpdateSubtitleForCurrentPosition(force: true);
+            UpdateAllDjDeckPlayerVolumes();
+
+            if (ViewModel.FocusedDjDeckIndex >= 0)
+            {
+                ViewModel.FocusDjDeckSlot(ViewModel.FocusedDjDeckIndex);
+            }
+            else
+            {
+                for (var i = 0; i < DjDeckPlayerCount; i++)
+                {
+                    if (ViewModel.GetMediaItemForDjDeckSlot(i) != null)
+                    {
+                        ViewModel.FocusDjDeckSlot(i);
+                        break;
+                    }
+                }
+            }
+
+            UpdateDjDeckPlaybackTimelines();
+        }
+
+        private void ExitDjDeckModeRuntime()
+        {
+            PauseAllDjDeckPlayers();
+            UpdateAllDjDeckPlayerVolumes();
+
+            if (ViewModel.Selected != null)
+            {
+                ViewModel.Selected = ViewModel.Selected;
+            }
+
+            UpdateSubtitleForCurrentPosition(force: true);
+        }
+
+        private void PauseAllDjDeckPlayers()
+        {
+            for (var i = 0; i < _djDeckPlayers.Length; i++)
+            {
+                try
+                {
+                    _djDeckPlayerPendingPlay[i] = false;
+                    _djDeckPlayers[i].Pause();
+                }
+                catch { }
+            }
+
+            ViewModel.StopAllDjDeckPlayback();
+        }
+
+        private void UpdateAllDjDeckPlayerVolumes()
+        {
+            for (var i = 0; i < _djDeckPlayers.Length; i++)
+            {
+                UpdateDjDeckPlayerVolume(i);
+            }
+        }
+
+        private void UpdateDjDeckPlayerVolume(int deckIndex)
+        {
+            if (deckIndex < 0 || deckIndex >= _djDeckPlayers.Length)
+            {
+                return;
+            }
+
+            try
+            {
+                _djDeckPlayers[deckIndex].Volume = ViewModel.IsDjDeckLayout
+                    ? ViewModel.GetDjDeckPlaybackVolume(deckIndex)
+                    : 0d;
+            }
+            catch { }
+        }
+
+        private void UpdateDjDeckPlaybackTimelines()
+        {
+            for (var i = 0; i < _djDeckPlayers.Length; i++)
+            {
+                var item = ViewModel.GetMediaItemForDjDeckSlot(i);
+                if (item == null)
+                {
+                    continue;
+                }
+
+                var durationSeconds = GetDjDeckDurationSeconds(i);
+                var positionSeconds = 0d;
+
+                try
+                {
+                    positionSeconds = _djDeckPlayers[i].Position.TotalSeconds;
+                }
+                catch { }
+
+                ViewModel.SetDjDeckTimeline(i, positionSeconds, durationSeconds);
+            }
+        }
+
+        private double GetDjDeckDurationSeconds(int deckIndex)
+        {
+            if (deckIndex < 0 || deckIndex >= _djDeckPlayers.Length)
+            {
+                return 0d;
+            }
+
+            try
+            {
+                if (_djDeckPlayerReady[deckIndex] && _djDeckPlayers[deckIndex].NaturalDuration.HasTimeSpan)
+                {
+                    return _djDeckPlayers[deckIndex].NaturalDuration.TimeSpan.TotalSeconds;
+                }
+            }
+            catch { }
+
+            return Math.Max(0d, ViewModel.GetMediaItemForDjDeckSlot(deckIndex)?.Duration.TotalSeconds ?? 0d);
+        }
+
+        private bool PrepareDjDeckPlayer(int deckIndex, bool autoplay)
+        {
+            if (deckIndex < 0 || deckIndex >= _djDeckPlayers.Length)
+            {
+                return false;
+            }
+
+            var item = ViewModel.GetMediaItemForDjDeckSlot(deckIndex);
+            if (item == null || string.IsNullOrWhiteSpace(item.FilePath))
+            {
+                return false;
+            }
+
+            if (!File.Exists(item.FilePath))
+            {
+                MessageBox.Show("File not found: " + item.FilePath, "Playback Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return false;
+            }
+
+            ViewModel.FocusDjDeckSlot(deckIndex);
+
+            var player = _djDeckPlayers[deckIndex];
+            if (string.Equals(_djDeckPlayerSources[deckIndex], item.FilePath, StringComparison.OrdinalIgnoreCase))
+            {
+                UpdateDjDeckPlayerVolume(deckIndex);
+                if (_djDeckPlayerReady[deckIndex])
+                {
+                    if (autoplay)
+                    {
+                        player.Play();
+                        ViewModel.SetDjDeckPlaybackState(deckIndex, true);
+                    }
+
+                    return true;
+                }
+
+                _djDeckPlayerPendingPlay[deckIndex] = autoplay;
+                return true;
+            }
+
+            try
+            {
+                _djDeckPlayerPendingPlay[deckIndex] = autoplay;
+                _djDeckPlayerReady[deckIndex] = false;
+                _djDeckPlayerSources[deckIndex] = item.FilePath;
+                ViewModel.ResetDjDeckRuntimeState(deckIndex);
+                player.Open(new Uri(item.FilePath, UriKind.Absolute));
+                UpdateDjDeckPlayerVolume(deckIndex);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _djDeckPlayerPendingPlay[deckIndex] = false;
+                _djDeckPlayerReady[deckIndex] = false;
+                _djDeckPlayerSources[deckIndex] = null;
+                ViewModel.SetDjDeckPlaybackState(deckIndex, false);
+                MessageBox.Show("Unable to load deck media: " + ex.Message, "Playback Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return false;
+            }
+        }
+
+        private bool ToggleDjDeckPlayback(int deckIndex)
+        {
+            if (!PrepareDjDeckPlayer(deckIndex, autoplay: false))
+            {
+                return false;
+            }
+
+            ViewModel.FocusDjDeckSlot(deckIndex);
+            if (!_djDeckPlayerReady[deckIndex])
+            {
+                _djDeckPlayerPendingPlay[deckIndex] = true;
+                return true;
+            }
+
+            var player = _djDeckPlayers[deckIndex];
+            if (ViewModel.IsDjDeckPlaying(deckIndex))
+            {
+                player.Pause();
+                ViewModel.SetDjDeckPlaybackState(deckIndex, false);
+                return true;
+            }
+
+            player.Play();
+            ViewModel.SetDjDeckPlaybackState(deckIndex, true);
+            return true;
+        }
+
+        private bool StopDjDeckPlayback(int deckIndex)
+        {
+            if (deckIndex < 0 || deckIndex >= _djDeckPlayers.Length)
+            {
+                return false;
+            }
+
+            var item = ViewModel.GetMediaItemForDjDeckSlot(deckIndex);
+            if (item == null)
+            {
+                return false;
+            }
+
+            var durationSeconds = GetDjDeckDurationSeconds(deckIndex);
+
+            _djDeckPlayerPendingPlay[deckIndex] = false;
+            try
+            {
+                _djDeckPlayers[deckIndex].Pause();
+                _djDeckPlayers[deckIndex].Position = TimeSpan.Zero;
+            }
+            catch { }
+
+            ViewModel.SetDjDeckTimeline(deckIndex, 0d, durationSeconds);
+            ViewModel.SetDjDeckPlaybackState(deckIndex, false);
+            return true;
+        }
+
+        private bool ReplayDjDeckPlayback(int deckIndex)
+        {
+            if (!PrepareDjDeckPlayer(deckIndex, autoplay: false))
+            {
+                return false;
+            }
+
+            ViewModel.FocusDjDeckSlot(deckIndex);
+            if (!_djDeckPlayerReady[deckIndex])
+            {
+                _djDeckPlayerPendingPlay[deckIndex] = true;
+                ViewModel.SetDjDeckTimeline(deckIndex, 0d, GetDjDeckDurationSeconds(deckIndex));
+                return true;
+            }
+
+            var durationSeconds = GetDjDeckDurationSeconds(deckIndex);
+
+            try
+            {
+                _djDeckPlayers[deckIndex].Position = TimeSpan.Zero;
+                _djDeckPlayers[deckIndex].Play();
+                ViewModel.SetDjDeckTimeline(deckIndex, 0d, durationSeconds);
+                ViewModel.SetDjDeckPlaybackState(deckIndex, true);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private bool ToggleFocusedDjDeckPlayback()
+        {
+            var focusedDeckIndex = ViewModel.FocusedDjDeckIndex;
+            if (focusedDeckIndex < 0)
+            {
+                return false;
+            }
+
+            return ToggleDjDeckPlayback(focusedDeckIndex);
+        }
+
+        private bool TrySeekDjDeck(int deckIndex, double progressPercent)
+        {
+            if (!PrepareDjDeckPlayer(deckIndex, autoplay: false) || !_djDeckPlayerReady[deckIndex])
+            {
+                return false;
+            }
+
+            var durationSeconds = GetDjDeckDurationSeconds(deckIndex);
+            if (durationSeconds <= 0d)
+            {
+                return false;
+            }
+
+            ViewModel.FocusDjDeckSlot(deckIndex);
+
+            var targetSeconds = durationSeconds * (Math.Clamp(progressPercent, 0d, 100d) / 100d);
+            _djDeckPlayers[deckIndex].Position = TimeSpan.FromSeconds(targetSeconds);
+            ViewModel.SetDjDeckTimeline(deckIndex, targetSeconds, durationSeconds);
+            return true;
+        }
+
+        private bool TrySeekDjDeckBySeconds(int deckIndex, double deltaSeconds)
+        {
+            if (!PrepareDjDeckPlayer(deckIndex, autoplay: false) || !_djDeckPlayerReady[deckIndex])
+            {
+                return false;
+            }
+
+            var durationSeconds = GetDjDeckDurationSeconds(deckIndex);
+            if (durationSeconds <= 0d)
+            {
+                return false;
+            }
+
+            ViewModel.FocusDjDeckSlot(deckIndex);
+
+            var targetSeconds = Math.Clamp(_djDeckPlayers[deckIndex].Position.TotalSeconds + deltaSeconds, 0d, durationSeconds);
+            _djDeckPlayers[deckIndex].Position = TimeSpan.FromSeconds(targetSeconds);
+            ViewModel.SetDjDeckTimeline(deckIndex, targetSeconds, durationSeconds);
+            return true;
+        }
+
+        private void HandleDjDeckMediaOpened(int deckIndex)
+        {
+            if (deckIndex < 0 || deckIndex >= _djDeckPlayers.Length)
+            {
+                return;
+            }
+
+            _djDeckPlayerReady[deckIndex] = true;
+
+            var durationSeconds = GetDjDeckDurationSeconds(deckIndex);
+            ViewModel.SetDjDeckTimeline(deckIndex, _djDeckPlayers[deckIndex].Position.TotalSeconds, durationSeconds);
+            UpdateDjDeckPlayerVolume(deckIndex);
+
+            if (_djDeckPlayerPendingPlay[deckIndex])
+            {
+                _djDeckPlayerPendingPlay[deckIndex] = false;
+                _djDeckPlayers[deckIndex].Play();
+                ViewModel.SetDjDeckPlaybackState(deckIndex, true);
+            }
+            else
+            {
+                ViewModel.SetDjDeckPlaybackState(deckIndex, false);
+            }
+        }
+
+        private void HandleDjDeckMediaEnded(int deckIndex)
+        {
+            if (deckIndex < 0 || deckIndex >= _djDeckPlayers.Length)
+            {
+                return;
+            }
+
+            var durationSeconds = GetDjDeckDurationSeconds(deckIndex);
+
+            try
+            {
+                _djDeckPlayers[deckIndex].Position = TimeSpan.Zero;
+            }
+            catch { }
+
+            ViewModel.SetDjDeckTimeline(deckIndex, 0d, durationSeconds);
+
+            if (ViewModel.LoopMedia && ViewModel.IsDjDeckLayout)
+            {
+                try
+                {
+                    _djDeckPlayers[deckIndex].Play();
+                    ViewModel.SetDjDeckPlaybackState(deckIndex, true);
+                    return;
+                }
+                catch { }
+            }
+
+            ViewModel.SetDjDeckPlaybackState(deckIndex, false);
+        }
+
+        private void HandleDjDeckMediaFailed(int deckIndex, Exception? exception)
+        {
+            if (deckIndex < 0 || deckIndex >= _djDeckPlayers.Length)
+            {
+                return;
+            }
+
+            _djDeckPlayerPendingPlay[deckIndex] = false;
+            _djDeckPlayerReady[deckIndex] = false;
+            ViewModel.SetDjDeckPlaybackState(deckIndex, false);
+
+            var label = deckIndex < ViewModel.DjDeckSlots.Count ? ViewModel.DjDeckSlots[deckIndex].Label : $"Deck {deckIndex + 1}";
+            var message = exception?.Message ?? "Unknown deck playback failure.";
+            MessageBox.Show($"{label} playback failed: {message}", "Playback Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+
         private static bool CanUseWaveProbe(string filePath)
         {
             try
@@ -1365,7 +2447,7 @@ namespace MDJMediaPlayer
 
         private void UpdateAudioWaveVisibility()
         {
-            var shouldShow = _isCurrentTrackAudioOnly && ViewModel.Selected != null;
+            var shouldShow = _isCurrentTrackAudioOnly && ViewModel.Selected != null && !ViewModel.IsDjDeckLayout;
 
             if (!shouldShow)
             {
@@ -2746,6 +3828,12 @@ namespace MDJMediaPlayer
         {
             try
             {
+                if (ViewModel.IsDjDeckLayout)
+                {
+                    UpdateDjDeckPlaybackTimelines();
+                    return;
+                }
+
                 if (mediaElement.NaturalDuration.HasTimeSpan)
                 {
                     ViewModel.Duration = mediaElement.NaturalDuration.TimeSpan.TotalSeconds;
@@ -2767,6 +3855,8 @@ namespace MDJMediaPlayer
                         SyncWaveProbePosition(force: false);
                     }
                 }
+
+                UpdateSubtitleForCurrentPosition(force: false);
             }
             catch { }
         }
@@ -2792,6 +3882,7 @@ namespace MDJMediaPlayer
                 // Apply the position immediately to mediaElement
                 mediaElement.Position = TimeSpan.FromSeconds(targetSeconds);
                 SyncWaveProbePosition(true);
+                UpdateSubtitleForCurrentPosition(force: true);
             }
             catch
             {
@@ -2799,10 +3890,184 @@ namespace MDJMediaPlayer
             }
         }
 
+        private void MixerSlider_PreviewMouseDoubleClick(object sender, MouseButtonEventArgs e)
+        {
+            if (sender is not Slider slider || slider.Tag == null)
+            {
+                return;
+            }
+
+            if (double.TryParse(
+                slider.Tag.ToString(),
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out var defaultValue))
+            {
+                slider.Value = defaultValue;
+                e.Handled = true;
+            }
+        }
+
+        private void DjDeckCard_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (sender is not Border border || border.DataContext is not Models.DjDeckSlot slot)
+            {
+                return;
+            }
+
+            var deckIndex = ViewModel.GetDjDeckSlotIndex(slot);
+            if (deckIndex < 0)
+            {
+                return;
+            }
+
+            var toggleSelection = Keyboard.Modifiers.HasFlag(ModifierKeys.Control);
+            ViewModel.SelectDjDeckSlot(deckIndex, toggleSelection);
+        }
+
+        private void DjDeckPlayButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is Button button && button.DataContext is Models.DjDeckSlot slot)
+            {
+                var deckIndex = ViewModel.GetDjDeckSlotIndex(slot);
+                if (deckIndex < 0)
+                {
+                    return;
+                }
+
+                ViewModel.SelectDjDeckSlot(deckIndex, toggleSelection: false);
+
+                if (ViewModel.IsDjDeckLayout)
+                {
+                    ToggleDjDeckPlayback(deckIndex);
+                    return;
+                }
+
+                ViewModel.ToggleDjDeckSlotPlayback(slot);
+            }
+        }
+
+        private void DjDeckAddFileButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is Button button && button.DataContext is Models.DjDeckSlot slot)
+            {
+                var deckIndex = ViewModel.GetDjDeckSlotIndex(slot);
+                if (deckIndex < 0)
+                {
+                    return;
+                }
+
+                ViewModel.SelectDjDeckSlot(deckIndex, toggleSelection: false);
+
+                if (ViewModel.LoadMediaIntoDjDeckSlot(slot))
+                {
+                    ViewModel.FocusDjDeckSlot(deckIndex);
+                    PrepareDjDeckPlayer(deckIndex, autoplay: false);
+                }
+            }
+        }
+
+        private void DjDeckStopButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not Button button || button.DataContext is not Models.DjDeckSlot slot)
+            {
+                return;
+            }
+
+            var deckIndex = ViewModel.GetDjDeckSlotIndex(slot);
+            if (deckIndex < 0)
+            {
+                return;
+            }
+
+            ViewModel.SelectDjDeckSlot(deckIndex, toggleSelection: false);
+            StopDjDeckPlayback(deckIndex);
+        }
+
+        private void DjDeckReplayButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not Button button || button.DataContext is not Models.DjDeckSlot slot)
+            {
+                return;
+            }
+
+            var deckIndex = ViewModel.GetDjDeckSlotIndex(slot);
+            if (deckIndex < 0)
+            {
+                return;
+            }
+
+            ViewModel.SelectDjDeckSlot(deckIndex, toggleSelection: false);
+            ReplayDjDeckPlayback(deckIndex);
+        }
+
+        private void DjDeckSeekSlider_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (sender is Slider slider && slider.DataContext is Models.DjDeckSlot slot)
+            {
+                slot.IsSeekDragging = true;
+                var deckIndex = ViewModel.GetDjDeckSlotIndex(slot);
+                if (deckIndex >= 0)
+                {
+                    ViewModel.SelectDjDeckSlot(deckIndex, toggleSelection: false);
+                }
+            }
+        }
+
+        private void DjDeckSeekSlider_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            if (sender is not Slider slider || slider.DataContext is not Models.DjDeckSlot slot)
+            {
+                return;
+            }
+
+            slot.IsSeekDragging = false;
+            var deckIndex = ViewModel.GetDjDeckSlotIndex(slot);
+            if (deckIndex < 0)
+            {
+                return;
+            }
+
+            if (ViewModel.IsDjDeckLayout)
+            {
+                TrySeekDjDeck(deckIndex, slider.Value);
+                return;
+            }
+
+            ViewModel.TrySeekDjDeckSlot(slot, slider.Value);
+        }
+
         private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
         {
+            if ((e.Key == Key.Up || e.Key == Key.Down) && ShouldHandleGlobalPlayerShortcut(e))
+            {
+                if (AdjustMasterVolume(e.Key == Key.Up ? MasterVolumeKeyStep : -MasterVolumeKeyStep))
+                {
+                    e.Handled = true;
+                }
+                return;
+            }
+
+            if (e.Key == Key.C && ShouldHandleGlobalPlayerShortcut(e))
+            {
+                if (ToggleSubtitleEnabled())
+                {
+                    e.Handled = true;
+                }
+                return;
+            }
+
             if (e.Key == Key.Space)
             {
+                if (ViewModel.IsDjDeckLayout)
+                {
+                    if (ToggleFocusedDjDeckPlayback())
+                    {
+                        e.Handled = true;
+                    }
+                    return;
+                }
+
                 if (ViewModel.Selected != null)
                 {
                     ViewModel.IsPlaying = !ViewModel.IsPlaying;
@@ -2829,8 +4094,69 @@ namespace MDJMediaPlayer
             }
         }
 
+        private bool AdjustMasterVolume(double delta)
+        {
+            var updatedVolume = Math.Clamp(ViewModel.Volume + delta, 0d, 1d);
+            if (Math.Abs(updatedVolume - ViewModel.Volume) < 0.0001d)
+            {
+                return false;
+            }
+
+            ViewModel.Volume = updatedVolume;
+            return true;
+        }
+
+        private static bool ShouldHandleGlobalPlayerShortcut(KeyEventArgs e)
+        {
+            if (Keyboard.Modifiers != ModifierKeys.None)
+            {
+                return false;
+            }
+
+            return !IsKeyboardFocusInsideInputControl(e.OriginalSource as DependencyObject) &&
+                   !IsKeyboardFocusInsideInputControl(Keyboard.FocusedElement as DependencyObject);
+        }
+
+        private static bool IsKeyboardFocusInsideInputControl(DependencyObject? source)
+        {
+            for (var current = source; current != null; current = GetInputParent(current))
+            {
+                if (current is RangeBase ||
+                    current is ComboBox ||
+                    current is TextBoxBase ||
+                    current is PasswordBox ||
+                    current is Selector)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static DependencyObject? GetInputParent(DependencyObject current)
+        {
+            if (current is Visual || current is System.Windows.Media.Media3D.Visual3D)
+            {
+                return VisualTreeHelper.GetParent(current);
+            }
+
+            return LogicalTreeHelper.GetParent(current);
+        }
+
         private bool TrySeekBySeconds(double deltaSeconds)
         {
+            if (ViewModel.IsDjDeckLayout)
+            {
+                var focusedDeckIndex = ViewModel.FocusedDjDeckIndex;
+                if (focusedDeckIndex < 0)
+                {
+                    return false;
+                }
+
+                return TrySeekDjDeckBySeconds(focusedDeckIndex, deltaSeconds);
+            }
+
             if (ViewModel.Selected == null)
             {
                 return false;
@@ -2938,12 +4264,22 @@ namespace MDJMediaPlayer
                 WindowOuterBorder.BeginAnimation(OpacityProperty, null);
 
                 TopBarRow.Height = new GridLength(38);
-                ControlPanel.Visibility = Visibility.Visible;
                 TopBar.Visibility = Visibility.Visible;
-                ControlPanel.Opacity = 1;
                 TopBar.Opacity = 1;
                 WindowOuterBorder.Visibility = Visibility.Visible;
                 WindowOuterBorder.Opacity = 1;
+
+                if (ViewModel.IsDjDeckLayout)
+                {
+                    ControlPanel.Visibility = Visibility.Collapsed;
+                    ControlPanel.Opacity = 0;
+                }
+                else
+                {
+                    ControlPanel.Visibility = Visibility.Visible;
+                    ControlPanel.Opacity = 1;
+                }
+
                 _controlsVisible = true;
                 if (ViewModel.AutoHideControls)
                 {
@@ -3010,13 +4346,44 @@ namespace MDJMediaPlayer
             TopBar.BeginAnimation(OpacityProperty, null);
             WindowOuterBorder.BeginAnimation(OpacityProperty, null);
             TopBarRow.Height = new GridLength(38);
-            ControlPanel.Visibility = Visibility.Visible;
             TopBar.Visibility = Visibility.Visible;
-            ControlPanel.Opacity = 1;
             TopBar.Opacity = 1;
             WindowOuterBorder.Visibility = Visibility.Visible;
             WindowOuterBorder.Opacity = 1;
+
+            if (ViewModel.IsDjDeckLayout)
+            {
+                ControlPanel.Visibility = Visibility.Collapsed;
+                ControlPanel.Opacity = 0;
+            }
+            else
+            {
+                ControlPanel.Visibility = Visibility.Visible;
+                ControlPanel.Opacity = 1;
+            }
+
             _controlsVisible = true;
+        }
+
+        private void CloseFilesListWindows()
+        {
+            try
+            {
+                var windowsToClose = new List<FilesListWindow>();
+                foreach (Window window in Application.Current.Windows)
+                {
+                    if (window is FilesListWindow filesListWindow)
+                    {
+                        windowsToClose.Add(filesListWindow);
+                    }
+                }
+
+                foreach (var window in windowsToClose)
+                {
+                    try { window.Close(); } catch { }
+                }
+            }
+            catch { }
         }
 
         // Allow dragging the window from anywhere
@@ -3117,10 +4484,12 @@ namespace MDJMediaPlayer
             if (ReferenceEquals(targetHost, MediaHost))
             {
                 MoveAudioWaveOverlayHome();
+                MoveSubtitleOverlayHome();
             }
             else
             {
                 MoveElementToPanel(AudioWaveOverlay, targetHost);
+                MoveElementToPanel(SubtitleOverlay, targetHost);
             }
         }
 
@@ -3164,6 +4533,34 @@ namespace MDJMediaPlayer
             else
             {
                 _audioWaveOverlayHomeParent.Children.Insert(insertIndex, AudioWaveOverlay);
+            }
+        }
+
+        private void MoveSubtitleOverlayHome()
+        {
+            if (_subtitleOverlayHomeParent == null)
+            {
+                return;
+            }
+
+            if (SubtitleOverlay.Parent == _subtitleOverlayHomeParent)
+            {
+                return;
+            }
+
+            if (SubtitleOverlay.Parent is Panel currentParent)
+            {
+                currentParent.Children.Remove(SubtitleOverlay);
+            }
+
+            var insertIndex = _subtitleOverlayHomeIndex;
+            if (insertIndex < 0 || insertIndex > _subtitleOverlayHomeParent.Children.Count)
+            {
+                _subtitleOverlayHomeParent.Children.Add(SubtitleOverlay);
+            }
+            else
+            {
+                _subtitleOverlayHomeParent.Children.Insert(insertIndex, SubtitleOverlay);
             }
         }
     }
