@@ -1,0 +1,561 @@
+<Window x:Class="MDJMediaPlayer.AdvancedMixerWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:conv="clr-namespace:MDJMediaPlayer.Converters"
+        mc:Ignorable="d"
+        Title="Advanced Mixer"
+        Height="790"
+        Width="1080"
+        MinHeight="760"
+        MinWidth="960"
+        ResizeMode="NoResize"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent">
+    <Window.Resources>
+        <conv:KnobAngleConverter x:Key="KnobAngleConverter" />
+
+        <Style x:Key="MixerDeckCardStyle" TargetType="Border">
+            <Setter Property="Margin" Value="6" />
+            <Setter Property="Padding" Value="12" />
+            <Setter Property="CornerRadius" Value="14" />
+            <Setter Property="Background" Value="#EA101A23" />
+            <Setter Property="BorderBrush" Value="#536B7D90" />
+            <Setter Property="BorderThickness" Value="1" />
+        </Style>
+
+        <Style x:Key="KnobSurfaceBorderStyle" TargetType="Border">
+            <Setter Property="CornerRadius" Value="33" />
+            <Setter Property="Background" Value="#0E1720" />
+            <Setter Property="BorderBrush" Value="#4F6B82" />
+            <Setter Property="BorderThickness" Value="1.2" />
+        </Style>
+
+        <Style x:Key="KnobStepButtonStyle" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="Width" Value="22" />
+            <Setter Property="Height" Value="20" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+    </Window.Resources>
+
+    <Border CornerRadius="12"
+            BorderBrush="{DynamicResource AeroBorderDarkBrush}"
+            BorderThickness="1"
+            Background="{DynamicResource WindowBackgroundBrush}"
+            SnapsToDevicePixels="True">
+        <Grid ClipToBounds="True">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="38" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <Border Grid.Row="0"
+                    Background="{DynamicResource CardAltBackgroundBrush}"
+                    CornerRadius="11,11,0,0">
+                <DockPanel Margin="4"
+                           LastChildFill="True"
+                           Background="Transparent">
+                    <StackPanel Orientation="Horizontal"
+                                DockPanel.Dock="Right"
+                                VerticalAlignment="Center"
+                                Margin="0,0,8,0">
+                        <Button x:Name="MinimizeButton"
+                                Style="{StaticResource TitlebarButtonStyle}"
+                                Click="MinimizeButton_Click">
+                            <Path Data="{StaticResource MinimizeIcon}" Stroke="#FFF" StrokeThickness="2" Width="12" Height="12" />
+                        </Button>
+                        <Button x:Name="CloseButton"
+                                Style="{StaticResource TitlebarButtonStyle}"
+                                Click="CloseButton_Click">
+                            <Path Data="{StaticResource CloseIcon}" Stroke="#FFF" StrokeThickness="1.5" Width="12" Height="12" />
+                        </Button>
+                    </StackPanel>
+
+                    <Grid Background="Transparent"
+                          MouseDown="Titlebar_MouseDown">
+                        <TextBlock Text="Advanced Mixer"
+                                   Foreground="#FFF"
+                                   VerticalAlignment="Center"
+                                   HorizontalAlignment="Center"
+                                   FontSize="14"
+                                   FontWeight="SemiBold" />
+                    </Grid>
+                </DockPanel>
+            </Border>
+
+            <Grid Grid.Row="1" Margin="14">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <StackPanel>
+                    <TextBlock Text="Performance EQ + Channel Mixer"
+                               Foreground="White"
+                               FontSize="20"
+                               FontWeight="SemiBold" />
+                    <TextBlock Text="A/B/C/D channel strips with High, Mid, Low, Gain knobs and dedicated faders."
+                               Foreground="{DynamicResource AeroSubTextBrush}"
+                               FontSize="12"
+                               Margin="0,4,0,0" />
+                </StackPanel>
+
+                <ScrollViewer Grid.Row="1"
+                              Margin="0,12,0,0"
+                              VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled"
+                              CanContentScroll="False">
+                    <ItemsControl ItemsSource="{Binding Channels}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <UniformGrid Columns="4" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Style="{StaticResource MixerDeckCardStyle}">
+                                    <Grid>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+
+                                    <TextBlock Text="{Binding DeckLabel}"
+                                               Foreground="{Binding AccentBrush}"
+                                               FontWeight="SemiBold"
+                                               FontSize="15"
+                                               HorizontalAlignment="Center" />
+
+                                    <UniformGrid Grid.Row="1"
+                                                 Columns="3"
+                                                 Margin="0,10,0,0">
+                                        <StackPanel HorizontalAlignment="Center">
+                                            <TextBlock Text="High"
+                                                       Foreground="#C9DEED"
+                                                       FontSize="11"
+                                                       HorizontalAlignment="Center" />
+                                            <Grid Width="66"
+                                                  Height="66"
+                                                  Margin="0,6,0,0"
+                                                  Tag="High"
+                                                  PreviewMouseWheel="Knob_PreviewMouseWheel"
+                                                  MouseLeftButtonDown="Knob_MouseLeftButtonDown">
+                                                <Border Style="{StaticResource KnobSurfaceBorderStyle}" />
+                                                <Ellipse Margin="5" Fill="#1E2E3D" Stroke="#5E7F98" StrokeThickness="1" />
+                                                <Line X1="33"
+                                                      Y1="33"
+                                                      X2="33"
+                                                      Y2="13"
+                                                      Stroke="#F1F7FF"
+                                                      StrokeThickness="2"
+                                                      StrokeStartLineCap="Round"
+                                                      StrokeEndLineCap="Round">
+                                                    <Line.RenderTransform>
+                                                        <RotateTransform CenterX="33"
+                                                                         CenterY="33"
+                                                                         Angle="{Binding High, Converter={StaticResource KnobAngleConverter}}" />
+                                                    </Line.RenderTransform>
+                                                </Line>
+                                                <Ellipse Width="8" Height="8" Fill="#D8EAF8" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                            </Grid>
+                                            <StackPanel Orientation="Horizontal"
+                                                        HorizontalAlignment="Center"
+                                                        Margin="0,6,0,0">
+                                                <Button Style="{StaticResource KnobStepButtonStyle}" Content="-" Tag="High" Click="KnobDownButton_Click" />
+                                                <TextBlock Text="{Binding High, StringFormat={}{0:0}}"
+                                                           Foreground="White"
+                                                           Width="26"
+                                                           Margin="4,0"
+                                                           TextAlignment="Center"
+                                                           VerticalAlignment="Center" />
+                                                <Button Style="{StaticResource KnobStepButtonStyle}" Content="+" Tag="High" Click="KnobUpButton_Click" />
+                                            </StackPanel>
+                                        </StackPanel>
+
+                                        <StackPanel HorizontalAlignment="Center">
+                                            <TextBlock Text="Mid"
+                                                       Foreground="#C9DEED"
+                                                       FontSize="11"
+                                                       HorizontalAlignment="Center" />
+                                            <Grid Width="66"
+                                                  Height="66"
+                                                  Margin="0,6,0,0"
+                                                  Tag="Mid"
+                                                  PreviewMouseWheel="Knob_PreviewMouseWheel"
+                                                  MouseLeftButtonDown="Knob_MouseLeftButtonDown">
+                                                <Border Style="{StaticResource KnobSurfaceBorderStyle}" />
+                                                <Ellipse Margin="5" Fill="#1E2E3D" Stroke="#5E7F98" StrokeThickness="1" />
+                                                <Line X1="33"
+                                                      Y1="33"
+                                                      X2="33"
+                                                      Y2="13"
+                                                      Stroke="#F1F7FF"
+                                                      StrokeThickness="2"
+                                                      StrokeStartLineCap="Round"
+                                                      StrokeEndLineCap="Round">
+                                                    <Line.RenderTransform>
+                                                        <RotateTransform CenterX="33"
+                                                                         CenterY="33"
+                                                                         Angle="{Binding Mid, Converter={StaticResource KnobAngleConverter}}" />
+                                                    </Line.RenderTransform>
+                                                </Line>
+                                                <Ellipse Width="8" Height="8" Fill="#D8EAF8" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                            </Grid>
+                                            <StackPanel Orientation="Horizontal"
+                                                        HorizontalAlignment="Center"
+                                                        Margin="0,6,0,0">
+                                                <Button Style="{StaticResource KnobStepButtonStyle}" Content="-" Tag="Mid" Click="KnobDownButton_Click" />
+                                                <TextBlock Text="{Binding Mid, StringFormat={}{0:0}}"
+                                                           Foreground="White"
+                                                           Width="26"
+                                                           Margin="4,0"
+                                                           TextAlignment="Center"
+                                                           VerticalAlignment="Center" />
+                                                <Button Style="{StaticResource KnobStepButtonStyle}" Content="+" Tag="Mid" Click="KnobUpButton_Click" />
+                                            </StackPanel>
+                                        </StackPanel>
+
+                                        <StackPanel HorizontalAlignment="Center">
+                                            <TextBlock Text="Low"
+                                                       Foreground="#C9DEED"
+                                                       FontSize="11"
+                                                       HorizontalAlignment="Center" />
+                                            <Grid Width="66"
+                                                  Height="66"
+                                                  Margin="0,6,0,0"
+                                                  Tag="Low"
+                                                  PreviewMouseWheel="Knob_PreviewMouseWheel"
+                                                  MouseLeftButtonDown="Knob_MouseLeftButtonDown">
+                                                <Border Style="{StaticResource KnobSurfaceBorderStyle}" />
+                                                <Ellipse Margin="5" Fill="#1E2E3D" Stroke="#5E7F98" StrokeThickness="1" />
+                                                <Line X1="33"
+                                                      Y1="33"
+                                                      X2="33"
+                                                      Y2="13"
+                                                      Stroke="#F1F7FF"
+                                                      StrokeThickness="2"
+                                                      StrokeStartLineCap="Round"
+                                                      StrokeEndLineCap="Round">
+                                                    <Line.RenderTransform>
+                                                        <RotateTransform CenterX="33"
+                                                                         CenterY="33"
+                                                                         Angle="{Binding Low, Converter={StaticResource KnobAngleConverter}}" />
+                                                    </Line.RenderTransform>
+                                                </Line>
+                                                <Ellipse Width="8" Height="8" Fill="#D8EAF8" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                            </Grid>
+                                            <StackPanel Orientation="Horizontal"
+                                                        HorizontalAlignment="Center"
+                                                        Margin="0,6,0,0">
+                                                <Button Style="{StaticResource KnobStepButtonStyle}" Content="-" Tag="Low" Click="KnobDownButton_Click" />
+                                                <TextBlock Text="{Binding Low, StringFormat={}{0:0}}"
+                                                           Foreground="White"
+                                                           Width="26"
+                                                           Margin="4,0"
+                                                           TextAlignment="Center"
+                                                           VerticalAlignment="Center" />
+                                                <Button Style="{StaticResource KnobStepButtonStyle}" Content="+" Tag="Low" Click="KnobUpButton_Click" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </UniformGrid>
+
+                                    <StackPanel Grid.Row="2"
+                                                VerticalAlignment="Top"
+                                                HorizontalAlignment="Center"
+                                                Margin="0,10,0,0">
+                                        <TextBlock Text="Channel Fader"
+                                                   Foreground="#8FB0C0"
+                                                   FontSize="11"
+                                                   HorizontalAlignment="Center"
+                                                   Margin="0,0,0,6" />
+                                        <Slider Orientation="Vertical"
+                                                Width="34"
+                                                Height="170"
+                                                Minimum="0"
+                                                Maximum="100"
+                                                Tag="80"
+                                                PreviewMouseDoubleClick="MixerSlider_PreviewMouseDoubleClick"
+                                                Value="{Binding Fader, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                        <TextBlock Text="{Binding Fader, StringFormat={}{0:0}%}"
+                                                   Foreground="#F5FBFF"
+                                                   FontSize="12"
+                                                   FontWeight="SemiBold"
+                                                   HorizontalAlignment="Center"
+                                                   Margin="0,6,0,0" />
+                                        <TextBlock Text="Gain"
+                                                   Foreground="#9CC6D9"
+                                                   FontSize="11"
+                                                   HorizontalAlignment="Center"
+                                                   Margin="0,12,0,0" />
+                                        <Grid Width="66"
+                                              Height="66"
+                                              Margin="0,6,0,0"
+                                              Tag="Gain"
+                                              PreviewMouseWheel="Knob_PreviewMouseWheel"
+                                              MouseLeftButtonDown="Knob_MouseLeftButtonDown">
+                                            <Border Style="{StaticResource KnobSurfaceBorderStyle}" />
+                                            <Ellipse Margin="5" Fill="#1E2E3D" Stroke="#5E7F98" StrokeThickness="1" />
+                                            <Line X1="33"
+                                                  Y1="33"
+                                                  X2="33"
+                                                  Y2="13"
+                                                  Stroke="#F1F7FF"
+                                                  StrokeThickness="2"
+                                                  StrokeStartLineCap="Round"
+                                                  StrokeEndLineCap="Round">
+                                                <Line.RenderTransform>
+                                                    <RotateTransform CenterX="33"
+                                                                     CenterY="33"
+                                                                     Angle="{Binding Gain, Converter={StaticResource KnobAngleConverter}, ConverterParameter=200}" />
+                                                </Line.RenderTransform>
+                                            </Line>
+                                            <Ellipse Width="8" Height="8" Fill="#D8EAF8" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                        </Grid>
+                                        <StackPanel Orientation="Horizontal"
+                                                    HorizontalAlignment="Center"
+                                                    Margin="0,6,0,0">
+                                            <Button Style="{StaticResource KnobStepButtonStyle}" Content="-" Tag="Gain" Click="KnobDownButton_Click" />
+                                            <TextBlock Text="{Binding Gain, StringFormat={}{0:0}%}"
+                                                       Foreground="White"
+                                                       Width="42"
+                                                       Margin="4,0"
+                                                       TextAlignment="Center"
+                                                       VerticalAlignment="Center" />
+                                            <Button Style="{StaticResource KnobStepButtonStyle}" Content="+" Tag="Gain" Click="KnobUpButton_Click" />
+                                        </StackPanel>
+                                    </StackPanel>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+
+                <Border Grid.Row="2"
+                        Margin="0,10,0,0"
+                        Padding="14,10"
+                        CornerRadius="12"
+                        Background="#B3111922"
+                        BorderBrush="#4D6A8196"
+                        BorderThickness="1">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" Margin="0,0,14,0" VerticalAlignment="Center">
+                            <TextBlock Text="Crossfader" Foreground="#CFE6F8" FontWeight="SemiBold" />
+                            <TextBlock Text="Double-click to reset center" Foreground="#93AEC3" FontSize="11" />
+                        </StackPanel>
+                        <Slider Grid.Column="1"
+                                Minimum="0"
+                                Maximum="100"
+                                Tag="50"
+                                PreviewMouseDoubleClick="MixerSlider_PreviewMouseDoubleClick"
+                                Value="{Binding Crossfader, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        <TextBlock Grid.Column="2"
+                                   Text="{Binding Crossfader, StringFormat={}{0:0}%}"
+                                   Foreground="#F5FBFF"
+                                   FontSize="14"
+                                   FontWeight="SemiBold"
+                                   VerticalAlignment="Center"
+                                   Margin="14,0,0,0" />
+                    </Grid>
+                </Border>
+
+                <Border Grid.Row="3"
+                        Margin="0,10,0,0"
+                        Padding="14,12"
+                        CornerRadius="12"
+                        Background="#B30F1822"
+                        BorderBrush="#4B6A8399"
+                        BorderThickness="1">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <TextBlock Text="Equalizer"
+                                   Foreground="#E8F5FF"
+                                   FontSize="15"
+                                   FontWeight="SemiBold" />
+                        <UniformGrid Grid.Row="1"
+                                     Columns="9"
+                                     Margin="0,10,0,0">
+                            <StackPanel HorizontalAlignment="Center">
+                                <TextBlock Text="31Hz" Foreground="#BFD3E2" FontSize="11" HorizontalAlignment="Center" />
+                                <Slider Width="26"
+                                        Height="120"
+                                        Orientation="Vertical"
+                                        Minimum="-12"
+                                        Maximum="12"
+                                        TickFrequency="1"
+                                        IsSnapToTickEnabled="True"
+                                        Tag="0"
+                                        PreviewMouseDoubleClick="MixerSlider_PreviewMouseDoubleClick"
+                                        Value="{Binding Mixer.Eq31Hz, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                <TextBlock Text="{Binding Mixer.Eq31Hz, StringFormat={}{0:+0;-0;0} dB}"
+                                           Foreground="#F5FBFF"
+                                           FontSize="11"
+                                           HorizontalAlignment="Center"
+                                           Margin="0,4,0,0" />
+                            </StackPanel>
+                            <StackPanel HorizontalAlignment="Center">
+                                <TextBlock Text="62Hz" Foreground="#BFD3E2" FontSize="11" HorizontalAlignment="Center" />
+                                <Slider Width="26"
+                                        Height="120"
+                                        Orientation="Vertical"
+                                        Minimum="-12"
+                                        Maximum="12"
+                                        TickFrequency="1"
+                                        IsSnapToTickEnabled="True"
+                                        Tag="0"
+                                        PreviewMouseDoubleClick="MixerSlider_PreviewMouseDoubleClick"
+                                        Value="{Binding Mixer.Eq62Hz, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                <TextBlock Text="{Binding Mixer.Eq62Hz, StringFormat={}{0:+0;-0;0} dB}"
+                                           Foreground="#F5FBFF"
+                                           FontSize="11"
+                                           HorizontalAlignment="Center"
+                                           Margin="0,4,0,0" />
+                            </StackPanel>
+                            <StackPanel HorizontalAlignment="Center">
+                                <TextBlock Text="125Hz" Foreground="#BFD3E2" FontSize="11" HorizontalAlignment="Center" />
+                                <Slider Width="26"
+                                        Height="120"
+                                        Orientation="Vertical"
+                                        Minimum="-12"
+                                        Maximum="12"
+                                        TickFrequency="1"
+                                        IsSnapToTickEnabled="True"
+                                        Tag="0"
+                                        PreviewMouseDoubleClick="MixerSlider_PreviewMouseDoubleClick"
+                                        Value="{Binding Mixer.Eq125Hz, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                <TextBlock Text="{Binding Mixer.Eq125Hz, StringFormat={}{0:+0;-0;0} dB}"
+                                           Foreground="#F5FBFF"
+                                           FontSize="11"
+                                           HorizontalAlignment="Center"
+                                           Margin="0,4,0,0" />
+                            </StackPanel>
+                            <StackPanel HorizontalAlignment="Center">
+                                <TextBlock Text="250Hz" Foreground="#BFD3E2" FontSize="11" HorizontalAlignment="Center" />
+                                <Slider Width="26"
+                                        Height="120"
+                                        Orientation="Vertical"
+                                        Minimum="-12"
+                                        Maximum="12"
+                                        TickFrequency="1"
+                                        IsSnapToTickEnabled="True"
+                                        Tag="0"
+                                        PreviewMouseDoubleClick="MixerSlider_PreviewMouseDoubleClick"
+                                        Value="{Binding Mixer.Eq250Hz, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                <TextBlock Text="{Binding Mixer.Eq250Hz, StringFormat={}{0:+0;-0;0} dB}"
+                                           Foreground="#F5FBFF"
+                                           FontSize="11"
+                                           HorizontalAlignment="Center"
+                                           Margin="0,4,0,0" />
+                            </StackPanel>
+                            <StackPanel HorizontalAlignment="Center">
+                                <TextBlock Text="1kHz" Foreground="#BFD3E2" FontSize="11" HorizontalAlignment="Center" />
+                                <Slider Width="26"
+                                        Height="120"
+                                        Orientation="Vertical"
+                                        Minimum="-12"
+                                        Maximum="12"
+                                        TickFrequency="1"
+                                        IsSnapToTickEnabled="True"
+                                        Tag="0"
+                                        PreviewMouseDoubleClick="MixerSlider_PreviewMouseDoubleClick"
+                                        Value="{Binding Mixer.Eq1kHz, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                <TextBlock Text="{Binding Mixer.Eq1kHz, StringFormat={}{0:+0;-0;0} dB}"
+                                           Foreground="#F5FBFF"
+                                           FontSize="11"
+                                           HorizontalAlignment="Center"
+                                           Margin="0,4,0,0" />
+                            </StackPanel>
+                            <StackPanel HorizontalAlignment="Center">
+                                <TextBlock Text="2kHz" Foreground="#BFD3E2" FontSize="11" HorizontalAlignment="Center" />
+                                <Slider Width="26"
+                                        Height="120"
+                                        Orientation="Vertical"
+                                        Minimum="-12"
+                                        Maximum="12"
+                                        TickFrequency="1"
+                                        IsSnapToTickEnabled="True"
+                                        Tag="0"
+                                        PreviewMouseDoubleClick="MixerSlider_PreviewMouseDoubleClick"
+                                        Value="{Binding Mixer.Eq2kHz, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                <TextBlock Text="{Binding Mixer.Eq2kHz, StringFormat={}{0:+0;-0;0} dB}"
+                                           Foreground="#F5FBFF"
+                                           FontSize="11"
+                                           HorizontalAlignment="Center"
+                                           Margin="0,4,0,0" />
+                            </StackPanel>
+                            <StackPanel HorizontalAlignment="Center">
+                                <TextBlock Text="4kHz" Foreground="#BFD3E2" FontSize="11" HorizontalAlignment="Center" />
+                                <Slider Width="26"
+                                        Height="120"
+                                        Orientation="Vertical"
+                                        Minimum="-12"
+                                        Maximum="12"
+                                        TickFrequency="1"
+                                        IsSnapToTickEnabled="True"
+                                        Tag="0"
+                                        PreviewMouseDoubleClick="MixerSlider_PreviewMouseDoubleClick"
+                                        Value="{Binding Mixer.Eq4kHz, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                <TextBlock Text="{Binding Mixer.Eq4kHz, StringFormat={}{0:+0;-0;0} dB}"
+                                           Foreground="#F5FBFF"
+                                           FontSize="11"
+                                           HorizontalAlignment="Center"
+                                           Margin="0,4,0,0" />
+                            </StackPanel>
+                            <StackPanel HorizontalAlignment="Center">
+                                <TextBlock Text="8kHz" Foreground="#BFD3E2" FontSize="11" HorizontalAlignment="Center" />
+                                <Slider Width="26"
+                                        Height="120"
+                                        Orientation="Vertical"
+                                        Minimum="-12"
+                                        Maximum="12"
+                                        TickFrequency="1"
+                                        IsSnapToTickEnabled="True"
+                                        Tag="0"
+                                        PreviewMouseDoubleClick="MixerSlider_PreviewMouseDoubleClick"
+                                        Value="{Binding Mixer.Eq8kHz, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                <TextBlock Text="{Binding Mixer.Eq8kHz, StringFormat={}{0:+0;-0;0} dB}"
+                                           Foreground="#F5FBFF"
+                                           FontSize="11"
+                                           HorizontalAlignment="Center"
+                                           Margin="0,4,0,0" />
+                            </StackPanel>
+                            <StackPanel HorizontalAlignment="Center">
+                                <TextBlock Text="16kHz" Foreground="#BFD3E2" FontSize="11" HorizontalAlignment="Center" />
+                                <Slider Width="26"
+                                        Height="120"
+                                        Orientation="Vertical"
+                                        Minimum="-12"
+                                        Maximum="12"
+                                        TickFrequency="1"
+                                        IsSnapToTickEnabled="True"
+                                        Tag="0"
+                                        PreviewMouseDoubleClick="MixerSlider_PreviewMouseDoubleClick"
+                                        Value="{Binding Mixer.Eq16kHz, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                <TextBlock Text="{Binding Mixer.Eq16kHz, StringFormat={}{0:+0;-0;0} dB}"
+                                           Foreground="#F5FBFF"
+                                           FontSize="11"
+                                           HorizontalAlignment="Center"
+                                           Margin="0,4,0,0" />
+                            </StackPanel>
+                        </UniformGrid>
+                    </Grid>
+                </Border>
+            </Grid>
+        </Grid>
+    </Border>
+</Window>

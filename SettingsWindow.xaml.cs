@@ -182,6 +182,18 @@ namespace MDJMediaPlayer
             return NormalizeVersion(versionInfo ?? new Version(0, 0, 0, 0));
         }
 
+        public static async Task<bool> IsUpdateAvailableAsync(bool includePreRelease)
+        {
+            var currentVersion = GetCurrentAppVersion();
+            var latestVersion = await GetLatestReleaseVersionAsync(includePreRelease);
+            return latestVersion != null && latestVersion > currentVersion;
+        }
+
+        public static bool OpenReleasePage()
+        {
+            return TryOpenReleasePage();
+        }
+
         private static Version NormalizeVersion(Version version)
         {
             return new Version(

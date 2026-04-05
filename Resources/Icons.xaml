@@ -9,8 +9,8 @@
     <Geometry x:Key="NextIcon">M0,0 L0,20 L12,10 Z M14,0 H18 V20 H14 Z</Geometry>
     <Geometry x:Key="PrevIcon">M12,0 L12,20 L0,10 Z M14,0 H18 V20 H14 Z</Geometry>
     <Geometry x:Key="MinimizeIcon">M0,10 H16</Geometry>
-    <Geometry x:Key="MaximizeIcon">M0,0 H16 V16 H0 Z</Geometry>
-    <Geometry x:Key="RestoreIcon">M2,4 H14 V14 H6 V4 Z M0,0 H12 V10 H0 Z</Geometry>
+    <Geometry x:Key="MaximizeIcon">M1,1 H11 V11 H1 Z</Geometry>
+    <Geometry x:Key="RestoreIcon">M1,5 H7 M1,5 V11 M1,11 H7 M7,5 V11 M5,1 H11 M5,1 V7 M5,7 H11 M11,1 V7</Geometry>
     <Geometry x:Key="CloseIcon">M2,2 L14,14 M14,2 L2,14</Geometry>
 
 </ResourceDictionary>

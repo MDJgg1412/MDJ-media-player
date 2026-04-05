@@ -258,11 +258,186 @@ namespace MDJMediaPlayer.ViewModels
             set => SetMixerLevel(ref _deckDFader, value, nameof(DeckDFader));
         }
 
+        private double _deckAGain = 100d;
+        public double DeckAGain
+        {
+            get => _deckAGain;
+            set => SetMixerGainLevel(ref _deckAGain, value, nameof(DeckAGain));
+        }
+
+        private double _deckBGain = 100d;
+        public double DeckBGain
+        {
+            get => _deckBGain;
+            set => SetMixerGainLevel(ref _deckBGain, value, nameof(DeckBGain));
+        }
+
+        private double _deckCGain = 100d;
+        public double DeckCGain
+        {
+            get => _deckCGain;
+            set => SetMixerGainLevel(ref _deckCGain, value, nameof(DeckCGain));
+        }
+
+        private double _deckDGain = 100d;
+        public double DeckDGain
+        {
+            get => _deckDGain;
+            set => SetMixerGainLevel(ref _deckDGain, value, nameof(DeckDGain));
+        }
+
         private double _crossfader = 50d;
         public double Crossfader
         {
             get => _crossfader;
             set => SetMixerLevel(ref _crossfader, value, nameof(Crossfader));
+        }
+
+        private double _deckAHigh = 50d;
+        public double DeckAHigh
+        {
+            get => _deckAHigh;
+            set => SetMixerEqLevel(ref _deckAHigh, value, nameof(DeckAHigh));
+        }
+
+        private double _deckAMid = 50d;
+        public double DeckAMid
+        {
+            get => _deckAMid;
+            set => SetMixerEqLevel(ref _deckAMid, value, nameof(DeckAMid));
+        }
+
+        private double _deckALow = 50d;
+        public double DeckALow
+        {
+            get => _deckALow;
+            set => SetMixerEqLevel(ref _deckALow, value, nameof(DeckALow));
+        }
+
+        private double _deckBHigh = 50d;
+        public double DeckBHigh
+        {
+            get => _deckBHigh;
+            set => SetMixerEqLevel(ref _deckBHigh, value, nameof(DeckBHigh));
+        }
+
+        private double _deckBMid = 50d;
+        public double DeckBMid
+        {
+            get => _deckBMid;
+            set => SetMixerEqLevel(ref _deckBMid, value, nameof(DeckBMid));
+        }
+
+        private double _deckBLow = 50d;
+        public double DeckBLow
+        {
+            get => _deckBLow;
+            set => SetMixerEqLevel(ref _deckBLow, value, nameof(DeckBLow));
+        }
+
+        private double _deckCHigh = 50d;
+        public double DeckCHigh
+        {
+            get => _deckCHigh;
+            set => SetMixerEqLevel(ref _deckCHigh, value, nameof(DeckCHigh));
+        }
+
+        private double _deckCMid = 50d;
+        public double DeckCMid
+        {
+            get => _deckCMid;
+            set => SetMixerEqLevel(ref _deckCMid, value, nameof(DeckCMid));
+        }
+
+        private double _deckCLow = 50d;
+        public double DeckCLow
+        {
+            get => _deckCLow;
+            set => SetMixerEqLevel(ref _deckCLow, value, nameof(DeckCLow));
+        }
+
+        private double _deckDHigh = 50d;
+        public double DeckDHigh
+        {
+            get => _deckDHigh;
+            set => SetMixerEqLevel(ref _deckDHigh, value, nameof(DeckDHigh));
+        }
+
+        private double _deckDMid = 50d;
+        public double DeckDMid
+        {
+            get => _deckDMid;
+            set => SetMixerEqLevel(ref _deckDMid, value, nameof(DeckDMid));
+        }
+
+        private double _deckDLow = 50d;
+        public double DeckDLow
+        {
+            get => _deckDLow;
+            set => SetMixerEqLevel(ref _deckDLow, value, nameof(DeckDLow));
+        }
+
+        private double _eq31Hz = 0d;
+        public double Eq31Hz
+        {
+            get => _eq31Hz;
+            set => SetEqualizerBandLevel(ref _eq31Hz, value, nameof(Eq31Hz));
+        }
+
+        private double _eq62Hz = 0d;
+        public double Eq62Hz
+        {
+            get => _eq62Hz;
+            set => SetEqualizerBandLevel(ref _eq62Hz, value, nameof(Eq62Hz));
+        }
+
+        private double _eq125Hz = 0d;
+        public double Eq125Hz
+        {
+            get => _eq125Hz;
+            set => SetEqualizerBandLevel(ref _eq125Hz, value, nameof(Eq125Hz));
+        }
+
+        private double _eq250Hz = 0d;
+        public double Eq250Hz
+        {
+            get => _eq250Hz;
+            set => SetEqualizerBandLevel(ref _eq250Hz, value, nameof(Eq250Hz));
+        }
+
+        private double _eq1kHz = 0d;
+        public double Eq1kHz
+        {
+            get => _eq1kHz;
+            set => SetEqualizerBandLevel(ref _eq1kHz, value, nameof(Eq1kHz));
+        }
+
+        private double _eq2kHz = 0d;
+        public double Eq2kHz
+        {
+            get => _eq2kHz;
+            set => SetEqualizerBandLevel(ref _eq2kHz, value, nameof(Eq2kHz));
+        }
+
+        private double _eq4kHz = 0d;
+        public double Eq4kHz
+        {
+            get => _eq4kHz;
+            set => SetEqualizerBandLevel(ref _eq4kHz, value, nameof(Eq4kHz));
+        }
+
+        private double _eq8kHz = 0d;
+        public double Eq8kHz
+        {
+            get => _eq8kHz;
+            set => SetEqualizerBandLevel(ref _eq8kHz, value, nameof(Eq8kHz));
+        }
+
+        private double _eq16kHz = 0d;
+        public double Eq16kHz
+        {
+            get => _eq16kHz;
+            set => SetEqualizerBandLevel(ref _eq16kHz, value, nameof(Eq16kHz));
         }
 
         public double EffectivePlaybackVolume =>
@@ -272,7 +447,7 @@ namespace MDJMediaPlayer.ViewModels
         public string MixerMonitorText => BuildMixerMonitorText();
 
 
-        private double _aeroColorLevel = 100d;
+        private double _aeroColorLevel = 0d;
         public double AeroColorLevel
         {
             get => _aeroColorLevel;
@@ -406,6 +581,44 @@ namespace MDJMediaPlayer.ViewModels
             RefreshDjDeckSlots();
         }
 
+        private void SetMixerEqLevel(ref double field, double value, string propertyName)
+        {
+            var clamped = Math.Clamp(value, 0d, 100d);
+            if (Math.Abs(field - clamped) < 0.001d)
+            {
+                return;
+            }
+
+            field = clamped;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+        }
+
+        private void SetMixerGainLevel(ref double field, double value, string propertyName)
+        {
+            var clamped = Math.Clamp(value, 0d, 200d);
+            if (Math.Abs(field - clamped) < 0.001d)
+            {
+                return;
+            }
+
+            field = clamped;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+            RaiseMixerDerivedProperties();
+            RefreshDjDeckSlots();
+        }
+
+        private void SetEqualizerBandLevel(ref double field, double value, string propertyName)
+        {
+            var clamped = Math.Clamp(value, -12d, 12d);
+            if (Math.Abs(field - clamped) < 0.001d)
+            {
+                return;
+            }
+
+            field = clamped;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+        }
+
         private double GetDeckFaderPercent(int deckIndex) => deckIndex switch
         {
             0 => DeckAFader,
@@ -413,6 +626,15 @@ namespace MDJMediaPlayer.ViewModels
             2 => DeckCFader,
             3 => DeckDFader,
             _ => 0d
+        };
+
+        private double GetDeckGainPercent(int deckIndex) => deckIndex switch
+        {
+            0 => DeckAGain,
+            1 => DeckBGain,
+            2 => DeckCGain,
+            3 => DeckDGain,
+            _ => 100d
         };
 
         private double GetDeckSideWeight(int deckIndex)
@@ -430,7 +652,9 @@ namespace MDJMediaPlayer.ViewModels
 
         private double GetDeckEffectivePercent(int deckIndex)
         {
-            return Math.Clamp(GetDeckFaderPercent(deckIndex) * GetDeckSideWeight(deckIndex), 0d, 100d);
+            var deckPercent = GetDeckFaderPercent(deckIndex) * GetDeckSideWeight(deckIndex);
+            var gainFactor = GetDeckGainPercent(deckIndex) / 100d;
+            return Math.Clamp(deckPercent * gainFactor, 0d, 200d);
         }
 
         private double GetDeckEffectiveLevelNormalized(int deckIndex)

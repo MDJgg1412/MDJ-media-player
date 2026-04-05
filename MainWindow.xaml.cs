@@ -14,10 +14,13 @@ using System.Net;
 using System.Buffers;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
+using System.Windows.Interop;
+using System.Windows.Shell;
 using LibVLCSharp.Shared;
 using VlcMedia = LibVLCSharp.Shared.Media;
+using VlcEqualizer = LibVLCSharp.Shared.Equalizer;
 using VlcMediaPlayer = LibVLCSharp.Shared.MediaPlayer;
-using WpfMediaPlayer = System.Windows.Media.MediaPlayer;
 
 namespace MDJMediaPlayer
 {
@@ -37,6 +40,11 @@ namespace MDJMediaPlayer
         private bool _isExtendedMode = false;
         private SFXWindow? _sfxWindow;
         private SettingsWindow? _settingsWindow;
+        private AdvancedMixerWindow? _advancedMixerWindow;
+        private bool _isFullscreenMode = false;
+        private WindowState _fullscreenRestoreWindowState = WindowState.Normal;
+        private Rect _fullscreenRestoreBounds = Rect.Empty;
+        private ResizeMode _fullscreenRestoreResizeMode = ResizeMode.CanResize;
         private readonly HashSet<string> _audioExtensions = new(StringComparer.OrdinalIgnoreCase)
         {
             ".aac", ".flac", ".m4a", ".mp3", ".ogg", ".wav", ".wma"
@@ -76,6 +84,9 @@ namespace MDJMediaPlayer
         private const double WaveOrbSafeOffsetPx = 16d;
         private const double WaveOrbFullscreenSpeedBoost = 1.22d;
         private const double WaveOrbFullscreenSizeBoost = 1.10d;
+        private const int WmGetMinMaxInfo = 0x0024;
+        private const uint MonitorDefaultToNearest = 2;
+        private const int DwmwaWindowCornerPreference = 33;
         private readonly object _audioEnergyLock = new();
         private readonly double[] _audioEnergyHistory = new double[AudioEnergyHistorySize];
         private readonly double[] _audioSampleHistory = new double[AudioSampleHistorySize];
@@ -113,17 +124,23 @@ namespace MDJMediaPlayer
         private double _lastWaveOrbViewportWidth = 0d;
         private double _lastWaveOrbViewportHeight = 0d;
         private const int DjDeckPlayerCount = 4;
-        private readonly WpfMediaPlayer[] _djDeckPlayers = new WpfMediaPlayer[DjDeckPlayerCount];
+        private static readonly double[] DjEqBandFrequenciesHz = { 60d, 170d, 310d, 600d, 1000d, 3000d, 6000d, 12000d, 14000d, 16000d };
+        private static readonly double[] MixerEqFrequenciesHz = { 31d, 62d, 125d, 250d, 1000d, 2000d, 4000d, 8000d, 16000d };
+        private LibVLC? _djDeckLibVlc;
+        private bool _djDeckAudioEngineFailed = false;
+        private readonly VlcMediaPlayer?[] _djDeckPlayers = new VlcMediaPlayer?[DjDeckPlayerCount];
+        private readonly VlcEqualizer?[] _djDeckEqualizers = new VlcEqualizer?[DjDeckPlayerCount];
         private readonly string?[] _djDeckPlayerSources = new string?[DjDeckPlayerCount];
         private readonly bool[] _djDeckPlayerReady = new bool[DjDeckPlayerCount];
         private readonly bool[] _djDeckPlayerPendingPlay = new bool[DjDeckPlayerCount];
+        private readonly bool[] _djDeckPlayerEnded = new bool[DjDeckPlayerCount];
         private const double MasterVolumeKeyStep = 0.05d;
         private Panel? _audioWaveOverlayHomeParent;
         private int _audioWaveOverlayHomeIndex = -1;
         private Panel? _subtitleOverlayHomeParent;
         private int _subtitleOverlayHomeIndex = -1;
         private bool _isLoadingSettings = false;
-        private readonly Dictionary<string, string> _subtitleOverridesByMediaPath = new(StringComparer.OrdinalIgnoreCase);
+        private bool _hasRunStartupUpdateCheck = false;
         private readonly List<SubtitleCue> _subtitleCues = new();
         private readonly HashSet<string> _subtitleExtensions = new(StringComparer.OrdinalIgnoreCase)
         {
@@ -163,6 +180,7 @@ namespace MDJMediaPlayer
         public MainWindow()
         {
             InitializeComponent();
+            SourceInitialized += MainWindow_SourceInitialized;
             InitializeDjDeckPlayers();
             InitializeWaveOrbs();
             CachePlaybackVisualHomeParents();
@@ -206,13 +224,51 @@ namespace MDJMediaPlayer
             mediaElement.MediaFailed += MediaElement_MediaFailed;
             this.StateChanged += MainWindow_StateChanged;
             this.Deactivated += MainWindow_Deactivated;
+            Loaded += MainWindow_Loaded;
             try { LoadPersistedSettings(); } catch { }
             // Ensure theme has default selection applied
             ApplyTheme(ViewModel.Theme);
             UpdateAutoHideBehavior();
+            UpdateMaximizeButtonIcon();
 
             try { LoadPersistedMainPlaylist(allowInitialSelection: !hasExplicitStartupMedia); } catch { }
             try { LoadStartupMediaFromArguments(startupArgs); } catch { }
+        }
+
+        private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
+        {
+            if (_hasRunStartupUpdateCheck)
+            {
+                return;
+            }
+
+            _hasRunStartupUpdateCheck = true;
+            await RunStartupUpdateCheckAsync();
+        }
+
+        private async Task RunStartupUpdateCheckAsync()
+        {
+            if (!ViewModel.CheckForUpdateAtStartup)
+            {
+                return;
+            }
+
+            try
+            {
+                var isUpdateAvailable = await SettingsWindow.IsUpdateAvailableAsync(ViewModel.AllowPreReleaseUpdate);
+                if (!isUpdateAvailable)
+                {
+                    return;
+                }
+
+                MessageBox.Show("New update found", "Update", MessageBoxButton.OK, MessageBoxImage.Information);
+                await Task.Delay(3000);
+                _ = SettingsWindow.OpenReleasePage();
+            }
+            catch
+            {
+                // Keep startup uninterrupted if update checking fails.
+            }
         }
 
         private void CachePlaybackVisualHomeParents()
@@ -232,17 +288,24 @@ namespace MDJMediaPlayer
 
         private void InitializeDjDeckPlayers()
         {
+            if (!EnsureDjDeckAudioEngine() || _djDeckLibVlc == null)
+            {
+                return;
+            }
+
             for (var i = 0; i < _djDeckPlayers.Length; i++)
             {
-                var player = new WpfMediaPlayer();
+                var player = new VlcMediaPlayer(_djDeckLibVlc);
                 var deckIndex = i;
+                _djDeckPlayerEnded[deckIndex] = false;
 
-                player.MediaOpened += (_, _) => Dispatcher.Invoke(() => HandleDjDeckMediaOpened(deckIndex));
-                player.MediaEnded += (_, _) => Dispatcher.Invoke(() => HandleDjDeckMediaEnded(deckIndex));
-                player.MediaFailed += (_, e) => Dispatcher.Invoke(() => HandleDjDeckMediaFailed(deckIndex, e.ErrorException));
-                player.Volume = 0d;
+                player.Playing += (_, _) => Dispatcher.BeginInvoke(new Action(() => HandleDjDeckMediaOpened(deckIndex)));
+                player.EndReached += (_, _) => Dispatcher.BeginInvoke(new Action(() => HandleDjDeckMediaEnded(deckIndex)));
+                player.EncounteredError += (_, _) => Dispatcher.BeginInvoke(new Action(() => HandleDjDeckMediaFailed(deckIndex, null)));
+                player.Volume = 0;
 
                 _djDeckPlayers[i] = player;
+                ApplyDjDeckEqualizer(deckIndex);
             }
         }
 
@@ -254,9 +317,60 @@ namespace MDJMediaPlayer
                 {
                     _djDeckPlayerPendingPlay[i] = false;
                     _djDeckPlayerReady[i] = false;
-                    _djDeckPlayers[i]?.Close();
+                    _djDeckPlayerSources[i] = null;
+                    _djDeckPlayerEnded[i] = false;
+                    _djDeckPlayers[i]?.Stop();
                 }
                 catch { }
+
+                try
+                {
+                    _djDeckPlayers[i]?.Dispose();
+                }
+                catch { }
+
+                try
+                {
+                    _djDeckEqualizers[i]?.Dispose();
+                }
+                catch { }
+
+                _djDeckPlayers[i] = null;
+                _djDeckEqualizers[i] = null;
+            }
+
+            try
+            {
+                _djDeckLibVlc?.Dispose();
+            }
+            catch { }
+
+            _djDeckLibVlc = null;
+        }
+
+        private bool EnsureDjDeckAudioEngine()
+        {
+            if (_djDeckLibVlc != null)
+            {
+                return true;
+            }
+
+            if (_djDeckAudioEngineFailed)
+            {
+                return false;
+            }
+
+            try
+            {
+                Core.Initialize();
+                _djDeckLibVlc = new LibVLC("--no-video", "--quiet");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _djDeckAudioEngineFailed = true;
+                MessageBox.Show("Unable to initialize DJ audio engine: " + ex.Message, "Audio Engine Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return false;
             }
         }
 
@@ -559,21 +673,49 @@ namespace MDJMediaPlayer
 
         private void MainWindow_StateChanged(object? sender, EventArgs e)
         {
-            if (this.WindowState == WindowState.Maximized)
+            if (_isFullscreenMode)
             {
                 FullscreenButton.Content = "Exit Fullscreen";
             }
             else
             {
                 FullscreenButton.Content = "Fullscreen";
+                if (this.WindowState == WindowState.Maximized)
+                {
+                    ApplyMaximizeBoundsToWorkArea();
+                }
+                else
+                {
+                    ClearMaximizeBounds();
+                }
             }
 
+            UpdateWindowFrameForState();
+            UpdateMaximizeButtonIcon();
             SyncWaveOrbsWithWindowState();
         }
 
         private void MinimizeButton_Click(object sender, RoutedEventArgs e)
         {
             this.WindowState = WindowState.Minimized;
+        }
+
+        private void MaximizeButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (_isFullscreenMode)
+            {
+                ExitFullscreenMode();
+            }
+
+            if (this.WindowState == WindowState.Maximized)
+            {
+                ClearMaximizeBounds();
+                this.WindowState = WindowState.Normal;
+                return;
+            }
+
+            ApplyMaximizeBoundsToWorkArea();
+            this.WindowState = WindowState.Maximized;
         }
 
         private void CloseButton_Click(object sender, RoutedEventArgs e)
@@ -644,6 +786,7 @@ namespace MDJMediaPlayer
             try { _sfxWindow?.SavePersisted(); } catch { }
             try { _sfxWindow?.ForceClose(); } catch { }
             try { _settingsWindow?.Close(); } catch { }
+            try { _advancedMixerWindow?.Close(); } catch { }
             try { _extendedModeWindow?.Close(); } catch { }
             try
             {
@@ -666,7 +809,39 @@ namespace MDJMediaPlayer
 
         private void FullscreenButton_Click(object sender, RoutedEventArgs e)
         {
-            this.WindowState = this.WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+            if (_isFullscreenMode)
+            {
+                ExitFullscreenMode();
+            }
+            else
+            {
+                EnterFullscreenMode();
+            }
+        }
+
+        private void AdvancedMixerButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (_advancedMixerWindow == null)
+            {
+                _advancedMixerWindow = new AdvancedMixerWindow(ViewModel)
+                {
+                    Owner = this,
+                    ShowInTaskbar = false
+                };
+                _advancedMixerWindow.Closed += (_, _) => _advancedMixerWindow = null;
+            }
+
+            if (!_advancedMixerWindow.IsVisible)
+            {
+                _advancedMixerWindow.Show();
+            }
+
+            if (_advancedMixerWindow.WindowState == WindowState.Minimized)
+            {
+                _advancedMixerWindow.WindowState = WindowState.Normal;
+            }
+
+            _advancedMixerWindow.Activate();
         }
 
         private void FilesListButton_Click(object sender, RoutedEventArgs e)
@@ -745,6 +920,276 @@ namespace MDJMediaPlayer
                     if (string.Equals(key, "DeckLayout", StringComparison.OrdinalIgnoreCase))
                     {
                         ViewModel.DeckLayout = value;
+                        continue;
+                    }
+
+                    if (string.Equals(key, "DeckAFader", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var deckAFader))
+                        {
+                            ViewModel.DeckAFader = deckAFader;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "DeckBFader", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var deckBFader))
+                        {
+                            ViewModel.DeckBFader = deckBFader;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "DeckCFader", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var deckCFader))
+                        {
+                            ViewModel.DeckCFader = deckCFader;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "DeckDFader", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var deckDFader))
+                        {
+                            ViewModel.DeckDFader = deckDFader;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "Crossfader", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var crossfader))
+                        {
+                            ViewModel.Crossfader = crossfader;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "DeckAGain", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var deckAGain))
+                        {
+                            ViewModel.DeckAGain = deckAGain;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "DeckBGain", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var deckBGain))
+                        {
+                            ViewModel.DeckBGain = deckBGain;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "DeckCGain", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var deckCGain))
+                        {
+                            ViewModel.DeckCGain = deckCGain;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "DeckDGain", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var deckDGain))
+                        {
+                            ViewModel.DeckDGain = deckDGain;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "DeckAHigh", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var deckAHigh))
+                        {
+                            ViewModel.DeckAHigh = deckAHigh;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "DeckAMid", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var deckAMid))
+                        {
+                            ViewModel.DeckAMid = deckAMid;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "DeckALow", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var deckALow))
+                        {
+                            ViewModel.DeckALow = deckALow;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "DeckBHigh", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var deckBHigh))
+                        {
+                            ViewModel.DeckBHigh = deckBHigh;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "DeckBMid", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var deckBMid))
+                        {
+                            ViewModel.DeckBMid = deckBMid;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "DeckBLow", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var deckBLow))
+                        {
+                            ViewModel.DeckBLow = deckBLow;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "DeckCHigh", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var deckCHigh))
+                        {
+                            ViewModel.DeckCHigh = deckCHigh;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "DeckCMid", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var deckCMid))
+                        {
+                            ViewModel.DeckCMid = deckCMid;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "DeckCLow", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var deckCLow))
+                        {
+                            ViewModel.DeckCLow = deckCLow;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "DeckDHigh", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var deckDHigh))
+                        {
+                            ViewModel.DeckDHigh = deckDHigh;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "DeckDMid", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var deckDMid))
+                        {
+                            ViewModel.DeckDMid = deckDMid;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "DeckDLow", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var deckDLow))
+                        {
+                            ViewModel.DeckDLow = deckDLow;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "Eq31Hz", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var eq31Hz))
+                        {
+                            ViewModel.Eq31Hz = eq31Hz;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "Eq62Hz", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var eq62Hz))
+                        {
+                            ViewModel.Eq62Hz = eq62Hz;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "Eq125Hz", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var eq125Hz))
+                        {
+                            ViewModel.Eq125Hz = eq125Hz;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "Eq250Hz", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var eq250Hz))
+                        {
+                            ViewModel.Eq250Hz = eq250Hz;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "Eq1kHz", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var eq1kHz))
+                        {
+                            ViewModel.Eq1kHz = eq1kHz;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "Eq2kHz", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var eq2kHz))
+                        {
+                            ViewModel.Eq2kHz = eq2kHz;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "Eq4kHz", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var eq4kHz))
+                        {
+                            ViewModel.Eq4kHz = eq4kHz;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "Eq8kHz", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var eq8kHz))
+                        {
+                            ViewModel.Eq8kHz = eq8kHz;
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(key, "Eq16kHz", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var eq16kHz))
+                        {
+                            ViewModel.Eq16kHz = eq16kHz;
+                        }
                         continue;
                     }
 
@@ -844,6 +1289,36 @@ namespace MDJMediaPlayer
             writer.WriteLine("# MDJ Media Player settings");
             writer.WriteLine("Theme=" + ViewModel.Theme);
             writer.WriteLine("DeckLayout=" + ViewModel.DeckLayout);
+            writer.WriteLine("DeckAFader=" + ViewModel.DeckAFader.ToString(CultureInfo.InvariantCulture));
+            writer.WriteLine("DeckBFader=" + ViewModel.DeckBFader.ToString(CultureInfo.InvariantCulture));
+            writer.WriteLine("DeckCFader=" + ViewModel.DeckCFader.ToString(CultureInfo.InvariantCulture));
+            writer.WriteLine("DeckDFader=" + ViewModel.DeckDFader.ToString(CultureInfo.InvariantCulture));
+            writer.WriteLine("DeckAGain=" + ViewModel.DeckAGain.ToString(CultureInfo.InvariantCulture));
+            writer.WriteLine("DeckBGain=" + ViewModel.DeckBGain.ToString(CultureInfo.InvariantCulture));
+            writer.WriteLine("DeckCGain=" + ViewModel.DeckCGain.ToString(CultureInfo.InvariantCulture));
+            writer.WriteLine("DeckDGain=" + ViewModel.DeckDGain.ToString(CultureInfo.InvariantCulture));
+            writer.WriteLine("Crossfader=" + ViewModel.Crossfader.ToString(CultureInfo.InvariantCulture));
+            writer.WriteLine("DeckAHigh=" + ViewModel.DeckAHigh.ToString(CultureInfo.InvariantCulture));
+            writer.WriteLine("DeckAMid=" + ViewModel.DeckAMid.ToString(CultureInfo.InvariantCulture));
+            writer.WriteLine("DeckALow=" + ViewModel.DeckALow.ToString(CultureInfo.InvariantCulture));
+            writer.WriteLine("DeckBHigh=" + ViewModel.DeckBHigh.ToString(CultureInfo.InvariantCulture));
+            writer.WriteLine("DeckBMid=" + ViewModel.DeckBMid.ToString(CultureInfo.InvariantCulture));
+            writer.WriteLine("DeckBLow=" + ViewModel.DeckBLow.ToString(CultureInfo.InvariantCulture));
+            writer.WriteLine("DeckCHigh=" + ViewModel.DeckCHigh.ToString(CultureInfo.InvariantCulture));
+            writer.WriteLine("DeckCMid=" + ViewModel.DeckCMid.ToString(CultureInfo.InvariantCulture));
+            writer.WriteLine("DeckCLow=" + ViewModel.DeckCLow.ToString(CultureInfo.InvariantCulture));
+            writer.WriteLine("DeckDHigh=" + ViewModel.DeckDHigh.ToString(CultureInfo.InvariantCulture));
+            writer.WriteLine("DeckDMid=" + ViewModel.DeckDMid.ToString(CultureInfo.InvariantCulture));
+            writer.WriteLine("DeckDLow=" + ViewModel.DeckDLow.ToString(CultureInfo.InvariantCulture));
+            writer.WriteLine("Eq31Hz=" + ViewModel.Eq31Hz.ToString(CultureInfo.InvariantCulture));
+            writer.WriteLine("Eq62Hz=" + ViewModel.Eq62Hz.ToString(CultureInfo.InvariantCulture));
+            writer.WriteLine("Eq125Hz=" + ViewModel.Eq125Hz.ToString(CultureInfo.InvariantCulture));
+            writer.WriteLine("Eq250Hz=" + ViewModel.Eq250Hz.ToString(CultureInfo.InvariantCulture));
+            writer.WriteLine("Eq1kHz=" + ViewModel.Eq1kHz.ToString(CultureInfo.InvariantCulture));
+            writer.WriteLine("Eq2kHz=" + ViewModel.Eq2kHz.ToString(CultureInfo.InvariantCulture));
+            writer.WriteLine("Eq4kHz=" + ViewModel.Eq4kHz.ToString(CultureInfo.InvariantCulture));
+            writer.WriteLine("Eq8kHz=" + ViewModel.Eq8kHz.ToString(CultureInfo.InvariantCulture));
+            writer.WriteLine("Eq16kHz=" + ViewModel.Eq16kHz.ToString(CultureInfo.InvariantCulture));
             writer.WriteLine("LoopMedia=" + ViewModel.LoopMedia);
             writer.WriteLine("AutoplayMedia=" + ViewModel.AutoplayMedia);
             writer.WriteLine("AutoNext=" + ViewModel.AutoNext);
@@ -896,6 +1371,9 @@ namespace MDJMediaPlayer
             {
                 return;
             }
+
+            // File-association launches should return the player to standard playback mode.
+            ViewModel.DeckLayout = "Default";
 
             // Opening the app with a specific media file is an explicit play action.
             ViewModel.IsPlaying = false;
@@ -1253,9 +1731,37 @@ namespace MDJMediaPlayer
                 e.PropertyName == nameof(ViewModel.DeckBFader) ||
                 e.PropertyName == nameof(ViewModel.DeckCFader) ||
                 e.PropertyName == nameof(ViewModel.DeckDFader) ||
+                e.PropertyName == nameof(ViewModel.DeckAGain) ||
+                e.PropertyName == nameof(ViewModel.DeckBGain) ||
+                e.PropertyName == nameof(ViewModel.DeckCGain) ||
+                e.PropertyName == nameof(ViewModel.DeckDGain) ||
                 e.PropertyName == nameof(ViewModel.Crossfader))
             {
                 UpdateAllDjDeckPlayerVolumes();
+            }
+            if (e.PropertyName == nameof(ViewModel.DeckAHigh) ||
+                e.PropertyName == nameof(ViewModel.DeckAMid) ||
+                e.PropertyName == nameof(ViewModel.DeckALow) ||
+                e.PropertyName == nameof(ViewModel.DeckBHigh) ||
+                e.PropertyName == nameof(ViewModel.DeckBMid) ||
+                e.PropertyName == nameof(ViewModel.DeckBLow) ||
+                e.PropertyName == nameof(ViewModel.DeckCHigh) ||
+                e.PropertyName == nameof(ViewModel.DeckCMid) ||
+                e.PropertyName == nameof(ViewModel.DeckCLow) ||
+                e.PropertyName == nameof(ViewModel.DeckDHigh) ||
+                e.PropertyName == nameof(ViewModel.DeckDMid) ||
+                e.PropertyName == nameof(ViewModel.DeckDLow) ||
+                e.PropertyName == nameof(ViewModel.Eq31Hz) ||
+                e.PropertyName == nameof(ViewModel.Eq62Hz) ||
+                e.PropertyName == nameof(ViewModel.Eq125Hz) ||
+                e.PropertyName == nameof(ViewModel.Eq250Hz) ||
+                e.PropertyName == nameof(ViewModel.Eq1kHz) ||
+                e.PropertyName == nameof(ViewModel.Eq2kHz) ||
+                e.PropertyName == nameof(ViewModel.Eq4kHz) ||
+                e.PropertyName == nameof(ViewModel.Eq8kHz) ||
+                e.PropertyName == nameof(ViewModel.Eq16kHz))
+            {
+                UpdateAllDjDeckEqualizers();
             }
             if (e.PropertyName == nameof(ViewModel.Position))
             {
@@ -1299,6 +1805,7 @@ namespace MDJMediaPlayer
                 }
                 else
                 {
+                    try { _advancedMixerWindow?.Close(); } catch { }
                     ExitDjDeckModeRuntime();
                 }
                 if (!_isLoadingSettings)
@@ -1570,12 +2077,6 @@ namespace MDJMediaPlayer
             {
                 return;
             }
-
-            if (!string.IsNullOrWhiteSpace(selectedMediaPath))
-            {
-                _subtitleOverridesByMediaPath[selectedMediaPath] = dialog.FileName;
-                _subtitleMediaPath = selectedMediaPath;
-            }
         }
 
         private void SubtitleToggleButton_Click(object sender, RoutedEventArgs e)
@@ -1604,14 +2105,6 @@ namespace MDJMediaPlayer
             {
                 ClearSubtitleCues();
                 return;
-            }
-
-            if (_subtitleOverridesByMediaPath.TryGetValue(mediaPath, out var overridePath) && File.Exists(overridePath))
-            {
-                if (TryLoadSubtitleFile(overridePath, mediaPath, showErrors: false))
-                {
-                    return;
-                }
             }
 
             var sidecarPath = FindSidecarSubtitlePath(mediaPath);
@@ -2036,6 +2529,7 @@ namespace MDJMediaPlayer
             StopWaveProbe();
             UpdateSubtitleForCurrentPosition(force: true);
             UpdateAllDjDeckPlayerVolumes();
+            UpdateAllDjDeckEqualizers();
 
             if (ViewModel.FocusedDjDeckIndex >= 0)
             {
@@ -2076,7 +2570,7 @@ namespace MDJMediaPlayer
                 try
                 {
                     _djDeckPlayerPendingPlay[i] = false;
-                    _djDeckPlayers[i].Pause();
+                    _djDeckPlayers[i]?.SetPause(true);
                 }
                 catch { }
             }
@@ -2092,6 +2586,14 @@ namespace MDJMediaPlayer
             }
         }
 
+        private void UpdateAllDjDeckEqualizers()
+        {
+            for (var i = 0; i < _djDeckPlayers.Length; i++)
+            {
+                ApplyDjDeckEqualizer(i);
+            }
+        }
+
         private void UpdateDjDeckPlayerVolume(int deckIndex)
         {
             if (deckIndex < 0 || deckIndex >= _djDeckPlayers.Length)
@@ -2101,11 +2603,153 @@ namespace MDJMediaPlayer
 
             try
             {
-                _djDeckPlayers[deckIndex].Volume = ViewModel.IsDjDeckLayout
-                    ? ViewModel.GetDjDeckPlaybackVolume(deckIndex)
+                var player = _djDeckPlayers[deckIndex];
+                if (player == null)
+                {
+                    return;
+                }
+
+                var volumePercent = ViewModel.IsDjDeckLayout
+                    ? ViewModel.GetDjDeckPlaybackVolume(deckIndex) * 100d
                     : 0d;
+                player.Volume = (int)Math.Round(Math.Clamp(volumePercent, 0d, 100d));
             }
             catch { }
+        }
+
+        private void ApplyDjDeckEqualizer(int deckIndex)
+        {
+            if (deckIndex < 0 || deckIndex >= _djDeckPlayers.Length)
+            {
+                return;
+            }
+
+            var player = _djDeckPlayers[deckIndex];
+            if (player == null)
+            {
+                return;
+            }
+
+            try
+            {
+                try { _djDeckEqualizers[deckIndex]?.Dispose(); } catch { }
+                _djDeckEqualizers[deckIndex] = null;
+
+                var equalizer = new VlcEqualizer();
+                equalizer.SetPreamp(0f);
+
+                for (var i = 0; i < DjEqBandFrequenciesHz.Length; i++)
+                {
+                    var frequencyHz = DjEqBandFrequenciesHz[i];
+                    var globalGainDb = GetGlobalEqualizerGainDb(frequencyHz);
+                    var deckToneGainDb = GetDeckToneGainDb(deckIndex, frequencyHz);
+                    var finalGainDb = (float)Math.Clamp(globalGainDb + deckToneGainDb, -20d, 20d);
+                    equalizer.SetAmp(finalGainDb, (uint)i);
+                }
+
+                player.SetEqualizer(equalizer);
+                _djDeckEqualizers[deckIndex] = equalizer;
+            }
+            catch
+            {
+                try { _djDeckEqualizers[deckIndex]?.Dispose(); } catch { }
+                _djDeckEqualizers[deckIndex] = null;
+            }
+        }
+
+        private double GetDeckToneGainDb(int deckIndex, double frequencyHz)
+        {
+            var (lowPercent, midPercent, highPercent) = deckIndex switch
+            {
+                0 => (ViewModel.DeckALow, ViewModel.DeckAMid, ViewModel.DeckAHigh),
+                1 => (ViewModel.DeckBLow, ViewModel.DeckBMid, ViewModel.DeckBHigh),
+                2 => (ViewModel.DeckCLow, ViewModel.DeckCMid, ViewModel.DeckCHigh),
+                3 => (ViewModel.DeckDLow, ViewModel.DeckDMid, ViewModel.DeckDHigh),
+                _ => (50d, 50d, 50d)
+            };
+
+            var lowDb = ((Math.Clamp(lowPercent, 0d, 100d) - 50d) / 50d) * 12d;
+            var midDb = ((Math.Clamp(midPercent, 0d, 100d) - 50d) / 50d) * 12d;
+            var highDb = ((Math.Clamp(highPercent, 0d, 100d) - 50d) / 50d) * 12d;
+
+            var lowWeight = frequencyHz <= 250d
+                ? 1d
+                : frequencyHz >= 1000d
+                    ? 0d
+                    : 1d - ((frequencyHz - 250d) / 750d);
+            var highWeight = frequencyHz <= 2000d
+                ? 0d
+                : frequencyHz >= 8000d
+                    ? 1d
+                    : (frequencyHz - 2000d) / 6000d;
+            var midWeight = Math.Clamp(1d - lowWeight - highWeight, 0d, 1d);
+
+            var weightSum = lowWeight + midWeight + highWeight;
+            if (weightSum <= 0.0001d)
+            {
+                return 0d;
+            }
+
+            lowWeight /= weightSum;
+            midWeight /= weightSum;
+            highWeight /= weightSum;
+
+            return (lowDb * lowWeight) + (midDb * midWeight) + (highDb * highWeight);
+        }
+
+        private double GetGlobalEqualizerGainDb(double frequencyHz)
+        {
+            static double GetBandValue(MainViewModel vm, int index) => index switch
+            {
+                0 => vm.Eq31Hz,
+                1 => vm.Eq62Hz,
+                2 => vm.Eq125Hz,
+                3 => vm.Eq250Hz,
+                4 => vm.Eq1kHz,
+                5 => vm.Eq2kHz,
+                6 => vm.Eq4kHz,
+                7 => vm.Eq8kHz,
+                8 => vm.Eq16kHz,
+                _ => 0d
+            };
+
+            if (frequencyHz <= MixerEqFrequenciesHz[0])
+            {
+                return GetBandValue(ViewModel, 0);
+            }
+
+            var lastIndex = MixerEqFrequenciesHz.Length - 1;
+            if (frequencyHz >= MixerEqFrequenciesHz[lastIndex])
+            {
+                return GetBandValue(ViewModel, lastIndex);
+            }
+
+            var targetLog = Math.Log10(frequencyHz);
+            for (var i = 1; i < MixerEqFrequenciesHz.Length; i++)
+            {
+                var nextFrequency = MixerEqFrequenciesHz[i];
+                if (frequencyHz > nextFrequency)
+                {
+                    continue;
+                }
+
+                var prevFrequency = MixerEqFrequenciesHz[i - 1];
+                var prevGain = GetBandValue(ViewModel, i - 1);
+                var nextGain = GetBandValue(ViewModel, i);
+                var prevLog = Math.Log10(prevFrequency);
+                var nextLog = Math.Log10(nextFrequency);
+                var denominator = nextLog - prevLog;
+
+                if (Math.Abs(denominator) < double.Epsilon)
+                {
+                    return prevGain;
+                }
+
+                var t = Math.Clamp((targetLog - prevLog) / denominator, 0d, 1d);
+                return prevGain + ((nextGain - prevGain) * t);
+            }
+
+            return 0d;
         }
 
         private void UpdateDjDeckPlaybackTimelines()
@@ -2123,7 +2767,12 @@ namespace MDJMediaPlayer
 
                 try
                 {
-                    positionSeconds = _djDeckPlayers[i].Position.TotalSeconds;
+                    var player = _djDeckPlayers[i];
+                    if (player != null)
+                    {
+                        var timeMs = Math.Max(0L, player.Time);
+                        positionSeconds = timeMs / 1000d;
+                    }
                 }
                 catch { }
 
@@ -2140,14 +2789,120 @@ namespace MDJMediaPlayer
 
             try
             {
-                if (_djDeckPlayerReady[deckIndex] && _djDeckPlayers[deckIndex].NaturalDuration.HasTimeSpan)
+                var player = _djDeckPlayers[deckIndex];
+                if (_djDeckPlayerReady[deckIndex] && player != null)
                 {
-                    return _djDeckPlayers[deckIndex].NaturalDuration.TimeSpan.TotalSeconds;
+                    var lengthMs = player.Length;
+                    if (lengthMs > 0L)
+                    {
+                        return lengthMs / 1000d;
+                    }
                 }
             }
             catch { }
 
             return Math.Max(0d, ViewModel.GetMediaItemForDjDeckSlot(deckIndex)?.Duration.TotalSeconds ?? 0d);
+        }
+
+        private bool IsDjDeckPlaybackAtEnd(int deckIndex)
+        {
+            if (deckIndex < 0 || deckIndex >= _djDeckPlayers.Length)
+            {
+                return false;
+            }
+
+            var player = _djDeckPlayers[deckIndex];
+            if (player == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                var lengthMs = player.Length;
+                if (lengthMs <= 0L)
+                {
+                    return false;
+                }
+
+                var timeMs = Math.Max(0L, player.Time);
+                return timeMs >= Math.Max(0L, lengthMs - 350L);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private bool ReloadDjDeckPlayerMedia(int deckIndex, bool autoplay)
+        {
+            if (deckIndex < 0 || deckIndex >= _djDeckPlayers.Length)
+            {
+                return false;
+            }
+
+            if (!EnsureDjDeckAudioEngine() || _djDeckLibVlc == null)
+            {
+                return false;
+            }
+
+            var player = _djDeckPlayers[deckIndex];
+            if (player == null)
+            {
+                return false;
+            }
+
+            var sourcePath = _djDeckPlayerSources[deckIndex] ?? ViewModel.GetMediaItemForDjDeckSlot(deckIndex)?.FilePath;
+            if (string.IsNullOrWhiteSpace(sourcePath) || !File.Exists(sourcePath))
+            {
+                return false;
+            }
+
+            try
+            {
+                try { player.Stop(); } catch { }
+                using var media = new VlcMedia(_djDeckLibVlc, new Uri(sourcePath, UriKind.Absolute));
+                _djDeckPlayerSources[deckIndex] = sourcePath;
+                _djDeckPlayerReady[deckIndex] = true;
+                _djDeckPlayerEnded[deckIndex] = false;
+                UpdateDjDeckPlayerVolume(deckIndex);
+                ApplyDjDeckEqualizer(deckIndex);
+
+                if (autoplay)
+                {
+                    var started = player.Play(media);
+                    if (!started)
+                    {
+                        player.Media = media;
+                        started = player.Play();
+                    }
+
+                    if (!started)
+                    {
+                        _djDeckPlayerEnded[deckIndex] = true;
+                    }
+
+                    return started;
+                }
+
+                player.Media = media;
+                try { player.Time = 0L; } catch { }
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private bool RestartDjDeckFromStart(int deckIndex)
+        {
+            if (deckIndex < 0 || deckIndex >= _djDeckPlayers.Length)
+            {
+                return false;
+            }
+
+            return ReloadDjDeckPlayerMedia(deckIndex, autoplay: true);
         }
 
         private bool PrepareDjDeckPlayer(int deckIndex, bool autoplay)
@@ -2169,41 +2924,87 @@ namespace MDJMediaPlayer
                 return false;
             }
 
+            if (!EnsureDjDeckAudioEngine() || _djDeckLibVlc == null)
+            {
+                return false;
+            }
+
             ViewModel.FocusDjDeckSlot(deckIndex);
 
             var player = _djDeckPlayers[deckIndex];
+            if (player == null)
+            {
+                player = new VlcMediaPlayer(_djDeckLibVlc);
+                var capturedDeckIndex = deckIndex;
+                player.Playing += (_, _) => Dispatcher.BeginInvoke(new Action(() => HandleDjDeckMediaOpened(capturedDeckIndex)));
+                player.EndReached += (_, _) => Dispatcher.BeginInvoke(new Action(() => HandleDjDeckMediaEnded(capturedDeckIndex)));
+                player.EncounteredError += (_, _) => Dispatcher.BeginInvoke(new Action(() => HandleDjDeckMediaFailed(capturedDeckIndex, null)));
+                _djDeckPlayers[deckIndex] = player;
+            }
+
             if (string.Equals(_djDeckPlayerSources[deckIndex], item.FilePath, StringComparison.OrdinalIgnoreCase))
             {
                 UpdateDjDeckPlayerVolume(deckIndex);
-                if (_djDeckPlayerReady[deckIndex])
+                ApplyDjDeckEqualizer(deckIndex);
+                _djDeckPlayerReady[deckIndex] = true;
+
+                if (autoplay)
                 {
-                    if (autoplay)
+                    var shouldRestart = _djDeckPlayerEnded[deckIndex] || IsDjDeckPlaybackAtEnd(deckIndex);
+                    var started = shouldRestart
+                        ? RestartDjDeckFromStart(deckIndex)
+                        : player.Play();
+                    if (!started)
                     {
-                        player.Play();
-                        ViewModel.SetDjDeckPlaybackState(deckIndex, true);
+                        started = RestartDjDeckFromStart(deckIndex);
                     }
-
-                    return true;
+                    if (started)
+                    {
+                        _djDeckPlayerEnded[deckIndex] = false;
+                    }
+                    ViewModel.SetDjDeckPlaybackState(deckIndex, started);
                 }
-
-                _djDeckPlayerPendingPlay[deckIndex] = autoplay;
                 return true;
             }
 
             try
             {
-                _djDeckPlayerPendingPlay[deckIndex] = autoplay;
+                _djDeckPlayerPendingPlay[deckIndex] = false;
                 _djDeckPlayerReady[deckIndex] = false;
+                _djDeckPlayerEnded[deckIndex] = false;
                 _djDeckPlayerSources[deckIndex] = item.FilePath;
                 ViewModel.ResetDjDeckRuntimeState(deckIndex);
-                player.Open(new Uri(item.FilePath, UriKind.Absolute));
+                try { player.Stop(); } catch { }
+                using var media = new VlcMedia(_djDeckLibVlc, new Uri(item.FilePath, UriKind.Absolute));
+                player.Media = media;
+                _djDeckPlayerReady[deckIndex] = true;
                 UpdateDjDeckPlayerVolume(deckIndex);
+                ApplyDjDeckEqualizer(deckIndex);
+
+                if (autoplay)
+                {
+                    var started = player.Play();
+                    if (started)
+                    {
+                        _djDeckPlayerEnded[deckIndex] = false;
+                    }
+                    ViewModel.SetDjDeckPlaybackState(deckIndex, started);
+                }
+                else
+                {
+                    try { player.Time = 0L; } catch { }
+                    _djDeckPlayerEnded[deckIndex] = false;
+                    ViewModel.SetDjDeckPlaybackState(deckIndex, false);
+                }
+
+                ViewModel.SetDjDeckTimeline(deckIndex, 0d, GetDjDeckDurationSeconds(deckIndex));
                 return true;
             }
             catch (Exception ex)
             {
                 _djDeckPlayerPendingPlay[deckIndex] = false;
                 _djDeckPlayerReady[deckIndex] = false;
+                _djDeckPlayerEnded[deckIndex] = false;
                 _djDeckPlayerSources[deckIndex] = null;
                 ViewModel.SetDjDeckPlaybackState(deckIndex, false);
                 MessageBox.Show("Unable to load deck media: " + ex.Message, "Playback Error", MessageBoxButton.OK, MessageBoxImage.Error);
@@ -2219,23 +3020,33 @@ namespace MDJMediaPlayer
             }
 
             ViewModel.FocusDjDeckSlot(deckIndex);
-            if (!_djDeckPlayerReady[deckIndex])
+            var player = _djDeckPlayers[deckIndex];
+            if (player == null)
             {
-                _djDeckPlayerPendingPlay[deckIndex] = true;
-                return true;
+                return false;
             }
 
-            var player = _djDeckPlayers[deckIndex];
-            if (ViewModel.IsDjDeckPlaying(deckIndex))
+            if (player.IsPlaying)
             {
-                player.Pause();
+                player.SetPause(true);
                 ViewModel.SetDjDeckPlaybackState(deckIndex, false);
                 return true;
             }
 
-            player.Play();
-            ViewModel.SetDjDeckPlaybackState(deckIndex, true);
-            return true;
+            var shouldRestart = _djDeckPlayerEnded[deckIndex] || IsDjDeckPlaybackAtEnd(deckIndex);
+            var started = shouldRestart
+                ? RestartDjDeckFromStart(deckIndex)
+                : player.Play();
+            if (!started)
+            {
+                started = RestartDjDeckFromStart(deckIndex);
+            }
+            if (started)
+            {
+                _djDeckPlayerEnded[deckIndex] = false;
+            }
+            ViewModel.SetDjDeckPlaybackState(deckIndex, started);
+            return started;
         }
 
         private bool StopDjDeckPlayback(int deckIndex)
@@ -2254,10 +3065,15 @@ namespace MDJMediaPlayer
             var durationSeconds = GetDjDeckDurationSeconds(deckIndex);
 
             _djDeckPlayerPendingPlay[deckIndex] = false;
+            _djDeckPlayerEnded[deckIndex] = false;
             try
             {
-                _djDeckPlayers[deckIndex].Pause();
-                _djDeckPlayers[deckIndex].Position = TimeSpan.Zero;
+                var player = _djDeckPlayers[deckIndex];
+                if (player != null)
+                {
+                    player.SetPause(true);
+                    player.Time = 0L;
+                }
             }
             catch { }
 
@@ -2274,22 +3090,24 @@ namespace MDJMediaPlayer
             }
 
             ViewModel.FocusDjDeckSlot(deckIndex);
-            if (!_djDeckPlayerReady[deckIndex])
+            var player = _djDeckPlayers[deckIndex];
+            if (player == null)
             {
-                _djDeckPlayerPendingPlay[deckIndex] = true;
-                ViewModel.SetDjDeckTimeline(deckIndex, 0d, GetDjDeckDurationSeconds(deckIndex));
-                return true;
+                return false;
             }
 
             var durationSeconds = GetDjDeckDurationSeconds(deckIndex);
 
             try
             {
-                _djDeckPlayers[deckIndex].Position = TimeSpan.Zero;
-                _djDeckPlayers[deckIndex].Play();
+                var started = RestartDjDeckFromStart(deckIndex);
+                if (started)
+                {
+                    _djDeckPlayerEnded[deckIndex] = false;
+                }
                 ViewModel.SetDjDeckTimeline(deckIndex, 0d, durationSeconds);
-                ViewModel.SetDjDeckPlaybackState(deckIndex, true);
-                return true;
+                ViewModel.SetDjDeckPlaybackState(deckIndex, started);
+                return started;
             }
             catch
             {
@@ -2324,7 +3142,8 @@ namespace MDJMediaPlayer
             ViewModel.FocusDjDeckSlot(deckIndex);
 
             var targetSeconds = durationSeconds * (Math.Clamp(progressPercent, 0d, 100d) / 100d);
-            _djDeckPlayers[deckIndex].Position = TimeSpan.FromSeconds(targetSeconds);
+            var targetMs = (long)Math.Round(targetSeconds * 1000d);
+            _djDeckPlayers[deckIndex]?.SeekTo(TimeSpan.FromMilliseconds(targetMs));
             ViewModel.SetDjDeckTimeline(deckIndex, targetSeconds, durationSeconds);
             return true;
         }
@@ -2344,8 +3163,15 @@ namespace MDJMediaPlayer
 
             ViewModel.FocusDjDeckSlot(deckIndex);
 
-            var targetSeconds = Math.Clamp(_djDeckPlayers[deckIndex].Position.TotalSeconds + deltaSeconds, 0d, durationSeconds);
-            _djDeckPlayers[deckIndex].Position = TimeSpan.FromSeconds(targetSeconds);
+            var currentSeconds = 0d;
+            try
+            {
+                currentSeconds = Math.Max(0L, _djDeckPlayers[deckIndex]?.Time ?? 0L) / 1000d;
+            }
+            catch { }
+            var targetSeconds = Math.Clamp(currentSeconds + deltaSeconds, 0d, durationSeconds);
+            var targetMs = (long)Math.Round(targetSeconds * 1000d);
+            _djDeckPlayers[deckIndex]?.SeekTo(TimeSpan.FromMilliseconds(targetMs));
             ViewModel.SetDjDeckTimeline(deckIndex, targetSeconds, durationSeconds);
             return true;
         }
@@ -2358,21 +3184,14 @@ namespace MDJMediaPlayer
             }
 
             _djDeckPlayerReady[deckIndex] = true;
+            _djDeckPlayerEnded[deckIndex] = false;
 
             var durationSeconds = GetDjDeckDurationSeconds(deckIndex);
-            ViewModel.SetDjDeckTimeline(deckIndex, _djDeckPlayers[deckIndex].Position.TotalSeconds, durationSeconds);
+            var positionSeconds = Math.Max(0L, _djDeckPlayers[deckIndex]?.Time ?? 0L) / 1000d;
+            ViewModel.SetDjDeckTimeline(deckIndex, positionSeconds, durationSeconds);
             UpdateDjDeckPlayerVolume(deckIndex);
-
-            if (_djDeckPlayerPendingPlay[deckIndex])
-            {
-                _djDeckPlayerPendingPlay[deckIndex] = false;
-                _djDeckPlayers[deckIndex].Play();
-                ViewModel.SetDjDeckPlaybackState(deckIndex, true);
-            }
-            else
-            {
-                ViewModel.SetDjDeckPlaybackState(deckIndex, false);
-            }
+            ApplyDjDeckEqualizer(deckIndex);
+            ViewModel.SetDjDeckPlaybackState(deckIndex, _djDeckPlayers[deckIndex]?.IsPlaying ?? false);
         }
 
         private void HandleDjDeckMediaEnded(int deckIndex)
@@ -2382,23 +3201,25 @@ namespace MDJMediaPlayer
                 return;
             }
 
+            _djDeckPlayerReady[deckIndex] = true;
+            _djDeckPlayerEnded[deckIndex] = true;
             var durationSeconds = GetDjDeckDurationSeconds(deckIndex);
-
-            try
-            {
-                _djDeckPlayers[deckIndex].Position = TimeSpan.Zero;
-            }
-            catch { }
-
             ViewModel.SetDjDeckTimeline(deckIndex, 0d, durationSeconds);
 
             if (ViewModel.LoopMedia && ViewModel.IsDjDeckLayout)
             {
                 try
                 {
-                    _djDeckPlayers[deckIndex].Play();
-                    ViewModel.SetDjDeckPlaybackState(deckIndex, true);
-                    return;
+                    var started = RestartDjDeckFromStart(deckIndex);
+                    if (started)
+                    {
+                        _djDeckPlayerEnded[deckIndex] = false;
+                    }
+                    ViewModel.SetDjDeckPlaybackState(deckIndex, started);
+                    if (started)
+                    {
+                        return;
+                    }
                 }
                 catch { }
             }
@@ -2415,6 +3236,8 @@ namespace MDJMediaPlayer
 
             _djDeckPlayerPendingPlay[deckIndex] = false;
             _djDeckPlayerReady[deckIndex] = false;
+            _djDeckPlayerEnded[deckIndex] = false;
+            _djDeckPlayerSources[deckIndex] = null;
             ViewModel.SetDjDeckPlaybackState(deckIndex, false);
 
             var label = deckIndex < ViewModel.DjDeckSlots.Count ? ViewModel.DjDeckSlots[deckIndex].Label : $"Deck {deckIndex + 1}";
@@ -2724,7 +3547,188 @@ namespace MDJMediaPlayer
 
         private bool IsWindowFullscreenForOrbs()
         {
-            return this.WindowState == WindowState.Maximized;
+            return _isFullscreenMode;
+        }
+
+        private void UpdateMaximizeButtonIcon()
+        {
+            if (MaximizeIconPath == null)
+            {
+                return;
+            }
+
+            var iconKey = this.WindowState == WindowState.Maximized && !_isFullscreenMode
+                ? "RestoreIcon"
+                : "MaximizeIcon";
+
+            if (TryFindResource(iconKey) is Geometry iconGeometry)
+            {
+                MaximizeIconPath.Data = iconGeometry;
+            }
+        }
+
+        private void MainWindow_SourceInitialized(object? sender, EventArgs e)
+        {
+            var windowHandle = new WindowInteropHelper(this).Handle;
+            var hwndSource = HwndSource.FromHwnd(windowHandle);
+            hwndSource?.AddHook(MainWindowWindowProc);
+            UpdateWindowFrameForState();
+        }
+
+        private IntPtr MainWindowWindowProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+        {
+            if (msg == WmGetMinMaxInfo)
+            {
+                ApplyMonitorWorkAreaToMinMaxInfo(hwnd, lParam);
+                handled = true;
+            }
+
+            return IntPtr.Zero;
+        }
+
+        private static void ApplyMonitorWorkAreaToMinMaxInfo(IntPtr hwnd, IntPtr lParam)
+        {
+            if (lParam == IntPtr.Zero)
+            {
+                return;
+            }
+
+            var minMaxInfo = Marshal.PtrToStructure<MINMAXINFO>(lParam);
+            var monitor = MonitorFromWindow(hwnd, MonitorDefaultToNearest);
+            if (monitor != IntPtr.Zero)
+            {
+                var monitorInfo = new MONITORINFO();
+                if (GetMonitorInfo(monitor, ref monitorInfo))
+                {
+                    var workArea = monitorInfo.rcWork;
+                    var monitorArea = monitorInfo.rcMonitor;
+
+                    minMaxInfo.ptMaxPosition.X = workArea.Left - monitorArea.Left;
+                    minMaxInfo.ptMaxPosition.Y = workArea.Top - monitorArea.Top;
+                    minMaxInfo.ptMaxSize.X = workArea.Right - workArea.Left;
+                    minMaxInfo.ptMaxSize.Y = workArea.Bottom - workArea.Top;
+                }
+            }
+
+            Marshal.StructureToPtr(minMaxInfo, lParam, true);
+        }
+
+        private void UpdateWindowFrameForState()
+        {
+            var isMaximizedOrFullscreen = _isFullscreenMode || this.WindowState == WindowState.Maximized;
+            if (MediaAreaBorder != null)
+            {
+                MediaAreaBorder.CornerRadius = isMaximizedOrFullscreen
+                    ? new CornerRadius(0)
+                    : new CornerRadius(10);
+            }
+
+            TrySetWindowCornerPreference(isMaximizedOrFullscreen
+                ? DwmWindowCornerPreference.DoNotRound
+                : DwmWindowCornerPreference.Default);
+        }
+
+        private void TrySetWindowCornerPreference(DwmWindowCornerPreference preference)
+        {
+            try
+            {
+                var windowHandle = new WindowInteropHelper(this).Handle;
+                if (windowHandle == IntPtr.Zero)
+                {
+                    return;
+                }
+
+                var preferenceValue = (int)preference;
+                _ = DwmSetWindowAttribute(windowHandle, DwmwaWindowCornerPreference, ref preferenceValue, sizeof(int));
+            }
+            catch
+            {
+            }
+        }
+
+        private void ApplyMaximizeBoundsToWorkArea()
+        {
+            // Maximize bounds are handled per-monitor in WM_GETMINMAXINFO.
+            MaxWidth = double.PositiveInfinity;
+            MaxHeight = double.PositiveInfinity;
+        }
+
+        private void ClearMaximizeBounds()
+        {
+            MaxWidth = double.PositiveInfinity;
+            MaxHeight = double.PositiveInfinity;
+        }
+
+        private void EnterFullscreenMode()
+        {
+            if (_isFullscreenMode)
+            {
+                return;
+            }
+
+            _fullscreenRestoreWindowState = this.WindowState;
+            _fullscreenRestoreBounds = new Rect(Left, Top, Width, Height);
+            _fullscreenRestoreResizeMode = this.ResizeMode;
+            _isFullscreenMode = true;
+
+            ClearMaximizeBounds();
+            ApplyFullscreenInteractionLock();
+            this.WindowState = WindowState.Normal;
+            Left = 0;
+            Top = 0;
+            Width = SystemParameters.PrimaryScreenWidth;
+            Height = SystemParameters.PrimaryScreenHeight;
+            FullscreenButton.Content = "Exit Fullscreen";
+            SyncWaveOrbsWithWindowState();
+        }
+
+        private void ExitFullscreenMode()
+        {
+            if (!_isFullscreenMode)
+            {
+                return;
+            }
+
+            _isFullscreenMode = false;
+            FullscreenButton.Content = "Fullscreen";
+            this.ResizeMode = _fullscreenRestoreResizeMode;
+            ApplyFullscreenInteractionLock();
+
+            if (_fullscreenRestoreWindowState == WindowState.Maximized)
+            {
+                ApplyMaximizeBoundsToWorkArea();
+                this.WindowState = WindowState.Maximized;
+            }
+            else
+            {
+                ClearMaximizeBounds();
+                this.WindowState = WindowState.Normal;
+                if (_fullscreenRestoreBounds.Width > 0d && _fullscreenRestoreBounds.Height > 0d)
+                {
+                    Left = _fullscreenRestoreBounds.Left;
+                    Top = _fullscreenRestoreBounds.Top;
+                    Width = _fullscreenRestoreBounds.Width;
+                    Height = _fullscreenRestoreBounds.Height;
+                }
+            }
+
+            SyncWaveOrbsWithWindowState();
+        }
+
+        private void ApplyFullscreenInteractionLock()
+        {
+            var windowChrome = WindowChrome.GetWindowChrome(this);
+            if (windowChrome != null)
+            {
+                windowChrome.ResizeBorderThickness = _isFullscreenMode
+                    ? new Thickness(0)
+                    : new Thickness(6);
+            }
+
+            if (_isFullscreenMode)
+            {
+                this.ResizeMode = ResizeMode.NoResize;
+            }
         }
 
         private void SyncWaveOrbsWithWindowState()
@@ -2737,6 +3741,67 @@ namespace MDJMediaPlayer
             EnsureWaveOrbCount(GetTargetWaveOrbCount());
             ResetWaveOrbLayout(randomizeVelocity: true);
         }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct POINT
+        {
+            public int X;
+            public int Y;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MINMAXINFO
+        {
+            public POINT ptReserved;
+            public POINT ptMaxSize;
+            public POINT ptMaxPosition;
+            public POINT ptMinTrackSize;
+            public POINT ptMaxTrackSize;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RECT
+        {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+        private struct MONITORINFO
+        {
+            public int cbSize;
+            public RECT rcMonitor;
+            public RECT rcWork;
+            public uint dwFlags;
+
+            public MONITORINFO()
+            {
+                cbSize = Marshal.SizeOf<MONITORINFO>();
+                rcMonitor = default;
+                rcWork = default;
+                dwFlags = 0;
+            }
+        }
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
+
+        private enum DwmWindowCornerPreference
+        {
+            Default = 0,
+            DoNotRound = 1,
+            Round = 2,
+            RoundSmall = 3
+        }
+
+        [DllImport("dwmapi.dll", PreserveSig = true)]
+        private static extern int DwmSetWindowAttribute(IntPtr hwnd, int dwAttribute, ref int pvAttribute, int cbAttribute);
 
         private void ResetWaveOrbLayout(bool randomizeVelocity)
         {
@@ -4251,6 +5316,19 @@ namespace MDJMediaPlayer
             ShowControls();
         }
 
+        private void UpdateControlsHiddenBackground(bool controlsHidden)
+        {
+            if (controlsHidden)
+            {
+                Background = Brushes.Black;
+                MediaAreaBorder.Background = Brushes.Black;
+                return;
+            }
+
+            SetResourceReference(BackgroundProperty, "WindowBackgroundBrush");
+            MediaAreaBorder.SetResourceReference(Border.BackgroundProperty, "PanelBackgroundBrush");
+        }
+
         private void ShowControls()
         {
             try
@@ -4281,6 +5359,7 @@ namespace MDJMediaPlayer
                 }
 
                 _controlsVisible = true;
+                UpdateControlsHiddenBackground(controlsHidden: false);
                 if (ViewModel.AutoHideControls)
                 {
                     _hideControlsTimer?.Start();
@@ -4301,6 +5380,7 @@ namespace MDJMediaPlayer
                 _hideControlsTimer?.Stop();
                 if (!_controlsVisible)
                 {
+                    UpdateControlsHiddenBackground(controlsHidden: true);
                     return;
                 }
 
@@ -4322,6 +5402,7 @@ namespace MDJMediaPlayer
                         TopBar.Visibility = Visibility.Collapsed;
                         TopBarRow.Height = new GridLength(0);
                         WindowOuterBorder.Opacity = 0;
+                        UpdateControlsHiddenBackground(controlsHidden: true);
                     }
                     catch { }
                 };
@@ -4363,6 +5444,7 @@ namespace MDJMediaPlayer
             }
 
             _controlsVisible = true;
+            UpdateControlsHiddenBackground(controlsHidden: false);
         }
 
         private void CloseFilesListWindows()
@@ -4390,6 +5472,7 @@ namespace MDJMediaPlayer
         private void Window_MouseDown(object sender, MouseButtonEventArgs e)
         {
             if (e.ChangedButton != MouseButton.Left) return;
+            if (_isFullscreenMode) return;
 
             // Otherwise allow dragging
             try { this.DragMove(); } catch { }

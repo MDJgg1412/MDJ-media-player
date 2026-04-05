@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         xmlns:vm="clr-namespace:MDJMediaPlayer.ViewModels"
         mc:Ignorable="d"
         Title="MDJ Media Player" Height="691" Width="1100" Icon="pack://application:,,,/Assets/app.ico"
@@ -11,6 +12,13 @@
         PreviewKeyDown="Window_PreviewKeyDown"
         MouseMove="Window_MouseMove"
         MouseLeave="Window_MouseLeave">
+    <shell:WindowChrome.WindowChrome>
+        <shell:WindowChrome CaptionHeight="0"
+                            ResizeBorderThickness="6"
+                            CornerRadius="0"
+                            GlassFrameThickness="0"
+                            UseAeroCaptionButtons="False" />
+    </shell:WindowChrome.WindowChrome>
     <Window.Resources>
         <LinearGradientBrush x:Key="AudioWaveRainbowBrush"
                              StartPoint="0.00,0.12"
@@ -358,6 +366,17 @@
                 <Button x:Name="MinimizeButton" Style="{StaticResource TitlebarButtonStyle}" Click="MinimizeButton_Click">
                     <Path Data="{StaticResource MinimizeIcon}" Stroke="#FFF" StrokeThickness="2" Width="12" Height="12" />
                 </Button>
+                <Button x:Name="MaximizeButton" Style="{StaticResource TitlebarButtonStyle}" Click="MaximizeButton_Click">
+                    <Path x:Name="MaximizeIconPath"
+                          Data="{StaticResource MaximizeIcon}"
+                          Fill="Transparent"
+                          Stroke="#FFF"
+                          StrokeThickness="1.1"
+                          Stretch="None"
+                          SnapsToDevicePixels="True"
+                          Width="12"
+                          Height="12" />
+                </Button>
                 <Button x:Name="CloseButton" Style="{StaticResource TitlebarButtonStyle}" Click="CloseButton_Click">
                     <Path Data="{StaticResource CloseIcon}" Stroke="#FFF" StrokeThickness="1.5" Width="12" Height="12" />
                 </Button>
@@ -390,7 +409,8 @@
         </DockPanel>
 
         <!-- Media area with overlay controls -->
-        <Border Grid.Row="1"
+        <Border x:Name="MediaAreaBorder"
+                Grid.Row="1"
                 Background="{DynamicResource PanelBackgroundBrush}"
                 CornerRadius="10">
             <Grid MouseMove="MediaArea_MouseMove" Background="Transparent">
@@ -737,7 +757,8 @@
                                         </StackPanel>
                                     </Grid>
 
-                                    <StackPanel Grid.Row="2">
+                                    <StackPanel Grid.Row="2"
+                                                Margin="0,4,0,0">
                                         <TextBlock Text="Crossfader"
                                                    Foreground="#A3BBCB"
                                                    FontSize="11"
@@ -747,6 +768,10 @@
                                                 Tag="50"
                                                 PreviewMouseDoubleClick="MixerSlider_PreviewMouseDoubleClick"
                                                 Value="{Binding Crossfader, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                        <Button x:Name="AdvancedMixerButton"
+                                                Content="Advanced Mixer"
+                                                Margin="0,10,0,0"
+                                                Click="AdvancedMixerButton_Click" />
                                     </StackPanel>
                                 </Grid>
                             </Border>

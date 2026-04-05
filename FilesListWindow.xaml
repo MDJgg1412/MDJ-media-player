@@ -43,12 +43,31 @@
             </Border>
 
             <!-- Content area -->
-            <ListBox x:Name="PlaylistListBox"
-                     Grid.Row="1"
-                     ItemsSource="{Binding Playlist}"
-                     SelectedItem="{Binding Selected, Mode=TwoWay}"
-                     IsSynchronizedWithCurrentItem="False"
-                     DisplayMemberPath="Title" />
+            <Grid Grid.Row="1">
+                <ListBox x:Name="PlaylistListBox"
+                         ItemsSource="{Binding Playlist}"
+                         SelectedItem="{Binding Selected, Mode=TwoWay}"
+                         IsSynchronizedWithCurrentItem="False"
+                         DisplayMemberPath="Title" />
+                <TextBlock Text="NO FILES FOUND"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"
+                           FontSize="24"
+                           FontWeight="Bold"
+                           Foreground="Gray"
+                           IsHitTestVisible="False">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding NoVideoFound}" Value="True">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+            </Grid>
 
             <!-- Bottom action bar (kept for convenience) -->
             <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,8">
