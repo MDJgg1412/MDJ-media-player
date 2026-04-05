@@ -363,6 +363,20 @@
             <TextBlock Text="MDJ Media Player" Foreground="#FFF" VerticalAlignment="Center" Margin="8,0" FontSize="14" FontWeight="SemiBold" />
 
             <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" VerticalAlignment="Center" Margin="0,0,8,0">
+                <Button x:Name="FullscreenButton" Style="{StaticResource TitlebarButtonStyle}" Click="FullscreenButton_Click" ToolTip="Fullscreen">
+                    <Path x:Name="FullscreenIconPath"
+                          Data="{StaticResource FullscreenIcon}"
+                          Fill="Transparent"
+                          Stroke="#FFF"
+                          StrokeThickness="1.2"
+                          Stretch="None"
+                          SnapsToDevicePixels="True"
+                          StrokeStartLineCap="Square"
+                          StrokeEndLineCap="Square"
+                          StrokeLineJoin="Miter"
+                          Width="12"
+                          Height="12" />
+                </Button>
                 <Button x:Name="MinimizeButton" Style="{StaticResource TitlebarButtonStyle}" Click="MinimizeButton_Click">
                     <Path Data="{StaticResource MinimizeIcon}" Stroke="#FFF" StrokeThickness="2" Width="12" Height="12" />
                 </Button>
@@ -401,7 +415,6 @@
                         IsEnabled="{Binding IsDefaultDeckLayout}"
                         Click="FilesListButton_Click" />
                 <Button x:Name="SFXButton" Content="SFX" Width="80" Margin="8,0" Click="SFXButton_Click" />
-                <Button x:Name="FullscreenButton" Content="Fullscreen" Width="100" Margin="8,0" Click="FullscreenButton_Click" />
                 <Button x:Name="ExtendedModeButton" Content="Extended Mode" Width="110" Margin="8,0" Click="ExtendedModeButton_Click" />
                 <Button x:Name="SettingsButton" Content="Settings" Width="90" Margin="8,0" Click="SettingsButton_Click" />
             </StackPanel>
@@ -578,11 +591,9 @@
                         VerticalAlignment="Bottom"
                         Margin="24,0,24,86"
                         MaxWidth="840"
-                        Padding="14,8"
-                        Background="#AF111111"
-                        BorderBrush="#80FFFFFF"
-                        BorderThickness="1"
-                        CornerRadius="8"
+                        Padding="0"
+                        Background="Transparent"
+                        BorderThickness="0"
                         Visibility="Collapsed"
                         IsHitTestVisible="False">
                     <TextBlock x:Name="SubtitleTextBlock"

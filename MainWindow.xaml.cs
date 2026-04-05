@@ -230,6 +230,7 @@ namespace MDJMediaPlayer
             ApplyTheme(ViewModel.Theme);
             UpdateAutoHideBehavior();
             UpdateMaximizeButtonIcon();
+            UpdateFullscreenButtonIcon();
 
             try { LoadPersistedMainPlaylist(allowInitialSelection: !hasExplicitStartupMedia); } catch { }
             try { LoadStartupMediaFromArguments(startupArgs); } catch { }
@@ -673,13 +674,8 @@ namespace MDJMediaPlayer
 
         private void MainWindow_StateChanged(object? sender, EventArgs e)
         {
-            if (_isFullscreenMode)
+            if (!_isFullscreenMode)
             {
-                FullscreenButton.Content = "Exit Fullscreen";
-            }
-            else
-            {
-                FullscreenButton.Content = "Fullscreen";
                 if (this.WindowState == WindowState.Maximized)
                 {
                     ApplyMaximizeBoundsToWorkArea();
@@ -692,6 +688,7 @@ namespace MDJMediaPlayer
 
             UpdateWindowFrameForState();
             UpdateMaximizeButtonIcon();
+            UpdateFullscreenButtonIcon();
             SyncWaveOrbsWithWindowState();
         }
 
@@ -1710,6 +1707,18 @@ namespace MDJMediaPlayer
                 {
                     UpdateAudioWaveVisibility();
                     UpdateSubtitleForCurrentPosition(force: true);
+                    if (ViewModel.AutoHideControls)
+                    {
+                        if (ShouldKeepControlsVisibleWhilePaused())
+                        {
+                            ShowControls();
+                            _hideControlsTimer?.Stop();
+                        }
+                        else if (_controlsVisible)
+                        {
+                            _hideControlsTimer?.Start();
+                        }
+                    }
                     return;
                 }
 
@@ -1717,6 +1726,18 @@ namespace MDJMediaPlayer
                 SyncWaveProbePlayState(ViewModel.IsPlaying);
                 UpdateSubtitleForCurrentPosition(force: true);
                 UpdateAudioWaveVisibility();
+                if (ViewModel.AutoHideControls)
+                {
+                    if (ShouldKeepControlsVisibleWhilePaused())
+                    {
+                        ShowControls();
+                        _hideControlsTimer?.Stop();
+                    }
+                    else if (_controlsVisible)
+                    {
+                        _hideControlsTimer?.Start();
+                    }
+                }
             }
             if (e.PropertyName == nameof(ViewModel.Volume) || e.PropertyName == nameof(ViewModel.EffectivePlaybackVolume))
             {
@@ -3678,7 +3699,7 @@ namespace MDJMediaPlayer
             Top = 0;
             Width = SystemParameters.PrimaryScreenWidth;
             Height = SystemParameters.PrimaryScreenHeight;
-            FullscreenButton.Content = "Exit Fullscreen";
+            UpdateFullscreenButtonIcon();
             SyncWaveOrbsWithWindowState();
         }
 
@@ -3690,7 +3711,6 @@ namespace MDJMediaPlayer
             }
 
             _isFullscreenMode = false;
-            FullscreenButton.Content = "Fullscreen";
             this.ResizeMode = _fullscreenRestoreResizeMode;
             ApplyFullscreenInteractionLock();
 
@@ -3712,7 +3732,27 @@ namespace MDJMediaPlayer
                 }
             }
 
+            UpdateFullscreenButtonIcon();
             SyncWaveOrbsWithWindowState();
+        }
+
+        private void UpdateFullscreenButtonIcon()
+        {
+            if (FullscreenIconPath == null)
+            {
+                return;
+            }
+
+            var iconKey = _isFullscreenMode ? "ExitFullscreenIcon" : "FullscreenIcon";
+            if (TryFindResource(iconKey) is Geometry iconGeometry)
+            {
+                FullscreenIconPath.Data = iconGeometry;
+            }
+
+            if (FullscreenButton != null)
+            {
+                FullscreenButton.ToolTip = _isFullscreenMode ? "Exit Fullscreen" : "Fullscreen";
+            }
         }
 
         private void ApplyFullscreenInteractionLock()
@@ -5329,6 +5369,26 @@ namespace MDJMediaPlayer
             MediaAreaBorder.SetResourceReference(Border.BackgroundProperty, "PanelBackgroundBrush");
         }
 
+        private bool ShouldKeepControlsVisibleWhilePaused()
+        {
+            if (!ViewModel.AutoHideControls)
+            {
+                return false;
+            }
+
+            if (ViewModel.IsDjDeckLayout)
+            {
+                return true;
+            }
+
+            if (ViewModel.Selected == null)
+            {
+                return true;
+            }
+
+            return ViewModel.Selected != null && !ViewModel.IsPlaying;
+        }
+
         private void ShowControls()
         {
             try
@@ -5360,7 +5420,7 @@ namespace MDJMediaPlayer
 
                 _controlsVisible = true;
                 UpdateControlsHiddenBackground(controlsHidden: false);
-                if (ViewModel.AutoHideControls)
+                if (ViewModel.AutoHideControls && !ShouldKeepControlsVisibleWhilePaused())
                 {
                     _hideControlsTimer?.Start();
                 }
@@ -5374,6 +5434,12 @@ namespace MDJMediaPlayer
             {
                 if (!ViewModel.AutoHideControls)
                 {
+                    ShowControls();
+                    return;
+                }
+                if (ShouldKeepControlsVisibleWhilePaused())
+                {
+                    _hideControlsTimer?.Stop();
                     ShowControls();
                     return;
                 }
