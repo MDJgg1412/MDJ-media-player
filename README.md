@@ -17,6 +17,7 @@ Features:
 - Seek bar, current time / total duration display.
 - Volume control.
 - Subtitle support (`.srt` / `.vtt`) with auto sidecar detection and manual load.
+- AI audio separation system
 - DJ deck system
 - SFX
 
