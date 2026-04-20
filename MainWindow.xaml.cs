@@ -10,9 +10,13 @@ using System.IO;
 using System.Globalization;
 using System.Collections.Generic;
 using Microsoft.Win32;
+using System.Diagnostics;
 using System.Net;
 using System.Buffers;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows.Interop;
@@ -41,6 +45,7 @@ namespace MDJMediaPlayer
         private SFXWindow? _sfxWindow;
         private SettingsWindow? _settingsWindow;
         private AdvancedMixerWindow? _advancedMixerWindow;
+        private SeparatorsWindow? _separatorsWindow;
         private bool _isFullscreenMode = false;
         private WindowState _fullscreenRestoreWindowState = WindowState.Normal;
         private Rect _fullscreenRestoreBounds = Rect.Empty;
@@ -134,6 +139,17 @@ namespace MDJMediaPlayer
         private readonly bool[] _djDeckPlayerReady = new bool[DjDeckPlayerCount];
         private readonly bool[] _djDeckPlayerPendingPlay = new bool[DjDeckPlayerCount];
         private readonly bool[] _djDeckPlayerEnded = new bool[DjDeckPlayerCount];
+        private readonly bool[] _djDeckFailureRetryAttempted = new bool[DjDeckPlayerCount];
+        private const int DjStemTypeCount = 4;
+        private const int DjStemSyncToleranceMs = 140;
+        private const int DjStemSyncHardSeekThresholdMs = 460;
+        private readonly VlcMediaPlayer?[,] _djDeckStemPlayers = new VlcMediaPlayer?[DjDeckPlayerCount, DjStemTypeCount];
+        private readonly DjDeckStemFiles?[] _djDeckStemFiles = new DjDeckStemFiles?[DjDeckPlayerCount];
+        private readonly bool[] _djDeckStemSeparationRunning = new bool[DjDeckPlayerCount];
+        private readonly string?[] _djDeckStemSourceKeys = new string?[DjDeckPlayerCount];
+        private readonly string?[] _djDeckStemPlayersSourceKeys = new string?[DjDeckPlayerCount];
+        private readonly string?[] _djDeckStemLastError = new string?[DjDeckPlayerCount];
+        private readonly DjDeckSeparatorsState[] _djDeckSeparatorsStates = CreateDefaultDjDeckSeparatorsStates();
         private const double MasterVolumeKeyStep = 0.05d;
         private Panel? _audioWaveOverlayHomeParent;
         private int _audioWaveOverlayHomeIndex = -1;
@@ -175,6 +191,49 @@ namespace MDJMediaPlayer
             public required TimeSpan Start { get; init; }
             public required TimeSpan End { get; init; }
             public required string Text { get; init; }
+        }
+
+        private sealed class DjDeckSeparatorsState
+        {
+            public double Vocal = 100d;
+            public double Intrumental = 100d;
+        }
+
+        private enum DjStemType
+        {
+            Vocal = 0,
+            Intrumental = 1,
+            Bass = 2,
+            Drums = 3
+        }
+
+        private sealed class DjDeckStemFiles
+        {
+            public required string SourceKey { get; init; }
+            public required string VocalPath { get; init; }
+            public required string IntrumentalPath { get; init; }
+            public required string BassPath { get; init; }
+            public required string DrumsPath { get; init; }
+
+            public string GetPath(DjStemType stemType) => stemType switch
+            {
+                DjStemType.Vocal => VocalPath,
+                DjStemType.Intrumental => IntrumentalPath,
+                DjStemType.Bass => BassPath,
+                DjStemType.Drums => DrumsPath,
+                _ => VocalPath
+            };
+        }
+
+        private static DjDeckSeparatorsState[] CreateDefaultDjDeckSeparatorsStates()
+        {
+            var states = new DjDeckSeparatorsState[DjDeckPlayerCount];
+            for (var i = 0; i < states.Length; i++)
+            {
+                states[i] = new DjDeckSeparatorsState();
+            }
+
+            return states;
         }
 
         public MainWindow()
@@ -299,6 +358,7 @@ namespace MDJMediaPlayer
                 var player = new VlcMediaPlayer(_djDeckLibVlc);
                 var deckIndex = i;
                 _djDeckPlayerEnded[deckIndex] = false;
+                _djDeckFailureRetryAttempted[deckIndex] = false;
 
                 player.Playing += (_, _) => Dispatcher.BeginInvoke(new Action(() => HandleDjDeckMediaOpened(deckIndex)));
                 player.EndReached += (_, _) => Dispatcher.BeginInvoke(new Action(() => HandleDjDeckMediaEnded(deckIndex)));
@@ -320,6 +380,7 @@ namespace MDJMediaPlayer
                     _djDeckPlayerReady[i] = false;
                     _djDeckPlayerSources[i] = null;
                     _djDeckPlayerEnded[i] = false;
+                    _djDeckFailureRetryAttempted[i] = false;
                     _djDeckPlayers[i]?.Stop();
                 }
                 catch { }
@@ -336,8 +397,18 @@ namespace MDJMediaPlayer
                 }
                 catch { }
 
+                try
+                {
+                    DisposeDjDeckStemPlayers(i);
+                }
+                catch { }
+
                 _djDeckPlayers[i] = null;
                 _djDeckEqualizers[i] = null;
+                _djDeckStemFiles[i] = null;
+                _djDeckStemSeparationRunning[i] = false;
+                _djDeckStemSourceKeys[i] = null;
+                _djDeckStemLastError[i] = null;
             }
 
             try
@@ -784,6 +855,7 @@ namespace MDJMediaPlayer
             try { _sfxWindow?.ForceClose(); } catch { }
             try { _settingsWindow?.Close(); } catch { }
             try { _advancedMixerWindow?.Close(); } catch { }
+            try { _separatorsWindow?.ForceClose(); } catch { }
             try { _extendedModeWindow?.Close(); } catch { }
             try
             {
@@ -816,29 +888,73 @@ namespace MDJMediaPlayer
             }
         }
 
+        private void EnsureAdvancedMixerWindow()
+        {
+            if (_advancedMixerWindow != null && _advancedMixerWindow.IsLoaded)
+            {
+                return;
+            }
+
+            try { _advancedMixerWindow?.Close(); } catch { }
+
+            var advancedMixerWindow = new AdvancedMixerWindow(ViewModel)
+            {
+                Owner = this,
+                ShowInTaskbar = false
+            };
+            advancedMixerWindow.Closed += (_, _) =>
+            {
+                if (ReferenceEquals(_advancedMixerWindow, advancedMixerWindow))
+                {
+                    _advancedMixerWindow = null;
+                }
+            };
+            _advancedMixerWindow = advancedMixerWindow;
+        }
+
         private void AdvancedMixerButton_Click(object sender, RoutedEventArgs e)
         {
+            EnsureAdvancedMixerWindow();
             if (_advancedMixerWindow == null)
             {
-                _advancedMixerWindow = new AdvancedMixerWindow(ViewModel)
+                return;
+            }
+
+            try
+            {
+                if (!_advancedMixerWindow.IsVisible)
                 {
-                    Owner = this,
-                    ShowInTaskbar = false
-                };
-                _advancedMixerWindow.Closed += (_, _) => _advancedMixerWindow = null;
-            }
+                    _advancedMixerWindow.Show();
+                }
 
-            if (!_advancedMixerWindow.IsVisible)
+                if (_advancedMixerWindow.WindowState == WindowState.Minimized)
+                {
+                    _advancedMixerWindow.WindowState = WindowState.Normal;
+                }
+
+                _advancedMixerWindow.Activate();
+            }
+            catch
             {
-                _advancedMixerWindow.Show();
-            }
+                _advancedMixerWindow = null;
+                EnsureAdvancedMixerWindow();
+                if (_advancedMixerWindow == null)
+                {
+                    return;
+                }
 
-            if (_advancedMixerWindow.WindowState == WindowState.Minimized)
-            {
-                _advancedMixerWindow.WindowState = WindowState.Normal;
-            }
+                if (!_advancedMixerWindow.IsVisible)
+                {
+                    _advancedMixerWindow.Show();
+                }
 
-            _advancedMixerWindow.Activate();
+                if (_advancedMixerWindow.WindowState == WindowState.Minimized)
+                {
+                    _advancedMixerWindow.WindowState = WindowState.Normal;
+                }
+
+                _advancedMixerWindow.Activate();
+            }
         }
 
         private void FilesListButton_Click(object sender, RoutedEventArgs e)
@@ -1826,7 +1942,7 @@ namespace MDJMediaPlayer
                 }
                 else
                 {
-                    try { _advancedMixerWindow?.Close(); } catch { }
+                    try { _advancedMixerWindow?.Close(); } catch { } finally { _advancedMixerWindow = null; }
                     ExitDjDeckModeRuntime();
                 }
                 if (!_isLoadingSettings)
@@ -2574,6 +2690,18 @@ namespace MDJMediaPlayer
         private void ExitDjDeckModeRuntime()
         {
             PauseAllDjDeckPlayers();
+
+            // When leaving DJ layout, fully unload all deck files and stem runtime state.
+            for (var i = 0; i < DjDeckPlayerCount; i++)
+            {
+                UnloadDjDeckPlayback(i);
+
+                if (i < ViewModel.DjDeckSlots.Count)
+                {
+                    ViewModel.UnloadDjDeckSlot(ViewModel.DjDeckSlots[i]);
+                }
+            }
+
             UpdateAllDjDeckPlayerVolumes();
 
             if (ViewModel.Selected != null)
@@ -2592,11 +2720,624 @@ namespace MDJMediaPlayer
                 {
                     _djDeckPlayerPendingPlay[i] = false;
                     _djDeckPlayers[i]?.SetPause(true);
+                    PauseDjDeckStemPlayers(i, resetTime: false);
                 }
                 catch { }
             }
 
             ViewModel.StopAllDjDeckPlayback();
+        }
+
+        private static string GetDjStemCacheRootDirectory()
+        {
+            return Path.Combine(GetAppDataDir(), "stems", "demucs-htdemucs");
+        }
+
+        private static string BuildDjStemSourceKey(string sourcePath)
+        {
+            var absolutePath = Path.GetFullPath(sourcePath);
+            var fileInfo = new FileInfo(absolutePath);
+            var fingerprint = absolutePath + "|" +
+                              fileInfo.Length.ToString(CultureInfo.InvariantCulture) + "|" +
+                              fileInfo.LastWriteTimeUtc.Ticks.ToString(CultureInfo.InvariantCulture);
+            var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(fingerprint));
+            return Convert.ToHexString(hashBytes).ToLowerInvariant();
+        }
+
+        private static string GetDjStemCacheDirectory(string sourceKey)
+        {
+            return Path.Combine(GetDjStemCacheRootDirectory(), sourceKey);
+        }
+
+        private static bool TryGetCachedDjDeckStemFiles(string sourceKey, out DjDeckStemFiles? files)
+        {
+            files = null;
+            var cacheDirectory = GetDjStemCacheDirectory(sourceKey);
+            var vocalPath = Path.Combine(cacheDirectory, "vocal.wav");
+            var intrumentalPath = Path.Combine(cacheDirectory, "intrumental.wav");
+            var bassPath = Path.Combine(cacheDirectory, "bass.wav");
+            var drumsPath = Path.Combine(cacheDirectory, "drums.wav");
+
+            if (!File.Exists(vocalPath) ||
+                !File.Exists(intrumentalPath) ||
+                !File.Exists(bassPath) ||
+                !File.Exists(drumsPath))
+            {
+                return false;
+            }
+
+            files = new DjDeckStemFiles
+            {
+                SourceKey = sourceKey,
+                VocalPath = vocalPath,
+                IntrumentalPath = intrumentalPath,
+                BassPath = bassPath,
+                DrumsPath = drumsPath
+            };
+            return true;
+        }
+
+        private static string? TryResolvePythonExecutable()
+        {
+            var candidates = new[] { "python", "python3" };
+            foreach (var candidate in candidates)
+            {
+                try
+                {
+                    using var process = new Process
+                    {
+                        StartInfo = new ProcessStartInfo(candidate)
+                        {
+                            UseShellExecute = false,
+                            RedirectStandardError = true,
+                            RedirectStandardOutput = true,
+                            CreateNoWindow = true
+                        }
+                    };
+                    process.StartInfo.ArgumentList.Add("--version");
+                    if (!process.Start())
+                    {
+                        continue;
+                    }
+
+                    if (!process.WaitForExit(3000))
+                    {
+                        try { process.Kill(true); } catch { }
+                        continue;
+                    }
+
+                    if (process.ExitCode == 0)
+                    {
+                        return candidate;
+                    }
+                }
+                catch
+                {
+                    // Candidate not available on this machine.
+                }
+            }
+
+            return null;
+        }
+
+        private static string EnsureDjStemRunnerScript()
+        {
+            var scriptDirectory = Path.Combine(GetAppDataDir(), "stems", "scripts");
+            Directory.CreateDirectory(scriptDirectory);
+            var scriptPath = Path.Combine(scriptDirectory, "stem_separate.py");
+
+            var candidatePaths = new[]
+            {
+                Path.Combine(AppContext.BaseDirectory, "Ai", "stem_separate.py"),
+                Path.Combine(AppContext.BaseDirectory, "stem_separate.py"),
+                Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "Ai", "stem_separate.py"))
+            };
+
+            string? bundledScriptPath = null;
+            foreach (var candidate in candidatePaths)
+            {
+                if (File.Exists(candidate))
+                {
+                    bundledScriptPath = candidate;
+                    break;
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(bundledScriptPath))
+            {
+                throw new FileNotFoundException("Unable to locate AI stem runner script (Ai/stem_separate.py).");
+            }
+
+            File.Copy(bundledScriptPath, scriptPath, overwrite: true);
+            return scriptPath;
+        }
+
+        private static void AppendKnownFfmpegPaths(ProcessStartInfo startInfo)
+        {
+            var candidates = new List<string>();
+            var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+
+            var wingetPackages = Path.Combine(localAppData, "Microsoft", "WinGet", "Packages");
+            if (Directory.Exists(wingetPackages))
+            {
+                try
+                {
+                    foreach (var packageDirectory in Directory.EnumerateDirectories(wingetPackages, "Gyan.FFmpeg*"))
+                    {
+                        foreach (var ffmpegExe in Directory.EnumerateFiles(packageDirectory, "ffmpeg.exe", SearchOption.AllDirectories))
+                        {
+                            var binDirectory = Path.GetDirectoryName(ffmpegExe);
+                            if (!string.IsNullOrWhiteSpace(binDirectory))
+                            {
+                                candidates.Add(binDirectory);
+                            }
+                        }
+                    }
+                }
+                catch
+                {
+                    // Ignore probe failures and continue with any path entries already known.
+                }
+            }
+
+            var wingetLinks = Path.Combine(localAppData, "Microsoft", "WinGet", "Links");
+            if (Directory.Exists(wingetLinks))
+            {
+                candidates.Add(wingetLinks);
+            }
+
+            var pathValue = startInfo.Environment.TryGetValue("PATH", out var existingPath)
+                ? (existingPath ?? string.Empty)
+                : (Environment.GetEnvironmentVariable("PATH") ?? string.Empty);
+
+            foreach (var candidate in candidates)
+            {
+                if (string.IsNullOrWhiteSpace(candidate) || !Directory.Exists(candidate))
+                {
+                    continue;
+                }
+
+                if (pathValue.IndexOf(candidate, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    continue;
+                }
+
+                pathValue = candidate + Path.PathSeparator + pathValue;
+            }
+
+            startInfo.Environment["PATH"] = pathValue;
+        }
+
+        private static string BuildStemRunnerError(string stdOut, string stdErr)
+        {
+            var rawError = string.IsNullOrWhiteSpace(stdErr) ? stdOut : stdErr;
+            if (string.IsNullOrWhiteSpace(rawError))
+            {
+                return "AI separation failed.";
+            }
+
+            var trimmed = rawError.Trim();
+            try
+            {
+                using var jsonDocument = JsonDocument.Parse(trimmed);
+                if (jsonDocument.RootElement.ValueKind == JsonValueKind.Object &&
+                    jsonDocument.RootElement.TryGetProperty("error", out var errorElement))
+                {
+                    var parsed = errorElement.GetString();
+                    if (!string.IsNullOrWhiteSpace(parsed))
+                    {
+                        return parsed.Trim();
+                    }
+                }
+            }
+            catch
+            {
+                // Ignore non-JSON process output and fall back to compact text.
+            }
+
+            return trimmed.Replace(Environment.NewLine, " ");
+        }
+
+        private (bool Success, DjDeckStemFiles? Files, string Error) RunDemucsStemSeparation(string sourcePath, string sourceKey)
+        {
+            if (!File.Exists(sourcePath))
+            {
+                return (false, null, "Source file no longer exists.");
+            }
+
+            if (TryGetCachedDjDeckStemFiles(sourceKey, out var cached) && cached != null)
+            {
+                return (true, cached, string.Empty);
+            }
+
+            var pythonExecutable = TryResolvePythonExecutable();
+            if (string.IsNullOrWhiteSpace(pythonExecutable))
+            {
+                return (false, null, "Python is required for AI stem separation. Install Python 3, then try again.");
+            }
+
+            var cacheDirectory = GetDjStemCacheDirectory(sourceKey);
+            Directory.CreateDirectory(cacheDirectory);
+
+            try
+            {
+                var scriptPath = EnsureDjStemRunnerScript();
+                using var process = new Process
+                {
+                    StartInfo = new ProcessStartInfo(pythonExecutable)
+                    {
+                        WorkingDirectory = Path.GetDirectoryName(sourcePath) ?? Directory.GetCurrentDirectory(),
+                        UseShellExecute = false,
+                        RedirectStandardError = true,
+                        RedirectStandardOutput = true,
+                        CreateNoWindow = true
+                    }
+                };
+                AppendKnownFfmpegPaths(process.StartInfo);
+
+                process.StartInfo.ArgumentList.Add(scriptPath);
+                process.StartInfo.ArgumentList.Add("--input");
+                process.StartInfo.ArgumentList.Add(sourcePath);
+                process.StartInfo.ArgumentList.Add("--output");
+                process.StartInfo.ArgumentList.Add(cacheDirectory);
+                process.StartInfo.ArgumentList.Add("--model");
+                process.StartInfo.ArgumentList.Add("htdemucs");
+                process.StartInfo.ArgumentList.Add("--auto-install");
+
+                if (!process.Start())
+                {
+                    return (false, null, "Unable to start demucs process.");
+                }
+
+                var stdOutTask = process.StandardOutput.ReadToEndAsync();
+                var stdErrTask = process.StandardError.ReadToEndAsync();
+
+                if (!process.WaitForExit(1000 * 60 * 25))
+                {
+                    try { process.Kill(true); } catch { }
+                    return (false, null, "AI separation timed out.");
+                }
+
+                var stdOut = stdOutTask.GetAwaiter().GetResult();
+                var stdErr = stdErrTask.GetAwaiter().GetResult();
+
+                if (process.ExitCode != 0)
+                {
+                    return (false, null, BuildStemRunnerError(stdOut, stdErr));
+                }
+
+                if (!TryGetCachedDjDeckStemFiles(sourceKey, out var created) || created == null)
+                {
+                    return (false, null, "Unable to cache generated AI stems.");
+                }
+
+                return (true, created, string.Empty);
+            }
+            catch (Exception ex)
+            {
+                return (false, null, ex.Message);
+            }
+        }
+
+        private string GetDjDeckDisplayLabel(int deckIndex)
+        {
+            if (deckIndex >= 0 && deckIndex < ViewModel.DjDeckSlots.Count)
+            {
+                var label = ViewModel.DjDeckSlots[deckIndex].Label;
+                if (!string.IsNullOrWhiteSpace(label))
+                {
+                    return label;
+                }
+            }
+
+            return $"Deck {deckIndex + 1}";
+        }
+
+        private void EnsureDjDeckStemSeparationStarted(int deckIndex, string? sourcePath)
+        {
+            if (deckIndex < 0 || deckIndex >= DjDeckPlayerCount || string.IsNullOrWhiteSpace(sourcePath) || !File.Exists(sourcePath))
+            {
+                return;
+            }
+
+            string sourceKey;
+            try
+            {
+                sourceKey = BuildDjStemSourceKey(sourcePath);
+            }
+            catch
+            {
+                return;
+            }
+
+            var sourceChanged = !string.Equals(_djDeckStemSourceKeys[deckIndex], sourceKey, StringComparison.OrdinalIgnoreCase);
+            if (sourceChanged)
+            {
+                _djDeckStemSourceKeys[deckIndex] = sourceKey;
+                _djDeckStemFiles[deckIndex] = null;
+                _djDeckStemLastError[deckIndex] = null;
+                _djDeckStemSeparationRunning[deckIndex] = false;
+                DisposeDjDeckStemPlayers(deckIndex);
+            }
+
+            if (TryGetCachedDjDeckStemFiles(sourceKey, out var cached) && cached != null)
+            {
+                _djDeckStemFiles[deckIndex] = cached;
+                _djDeckStemLastError[deckIndex] = null;
+                EnsureDjDeckStemPlayersLoaded(deckIndex);
+                return;
+            }
+
+            if (_djDeckStemSeparationRunning[deckIndex])
+            {
+                return;
+            }
+
+            _djDeckStemSeparationRunning[deckIndex] = true;
+            DebugStatus.Text = $"{GetDjDeckDisplayLabel(deckIndex)}: extracting AI stems...";
+
+            _ = Task.Run(() =>
+            {
+                var result = RunDemucsStemSeparation(sourcePath, sourceKey);
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    if (!string.Equals(_djDeckStemSourceKeys[deckIndex], sourceKey, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return;
+                    }
+
+                    _djDeckStemSeparationRunning[deckIndex] = false;
+                    if (result.Success && result.Files != null)
+                    {
+                        _djDeckStemFiles[deckIndex] = result.Files;
+                        _djDeckStemLastError[deckIndex] = null;
+                        EnsureDjDeckStemPlayersLoaded(deckIndex);
+                        SyncDjDeckStemPlayersFromMain(deckIndex, forceSeek: true);
+                        UpdateDjDeckPlayerVolume(deckIndex);
+                        DebugStatus.Text = $"{GetDjDeckDisplayLabel(deckIndex)}: AI stems ready.";
+                        return;
+                    }
+
+                    _djDeckStemFiles[deckIndex] = null;
+                    _djDeckStemLastError[deckIndex] = result.Error;
+                    var errorMessage = string.IsNullOrWhiteSpace(result.Error) ? "Unknown error." : result.Error.Trim();
+                    if (errorMessage.Length > 220)
+                    {
+                        errorMessage = errorMessage.Substring(0, 220) + "...";
+                    }
+                    DebugStatus.Text = $"{GetDjDeckDisplayLabel(deckIndex)}: AI stem separation failed - {errorMessage}";
+                    if (_separatorsWindow != null && _separatorsWindow.IsVisible)
+                    {
+                        MessageBox.Show(
+                            $"{GetDjDeckDisplayLabel(deckIndex)} AI stem separation failed.{Environment.NewLine}{Environment.NewLine}{errorMessage}{Environment.NewLine}{Environment.NewLine}Install Python 3 and FFmpeg, then open separators again.",
+                            "AI Source Separation",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Warning);
+                    }
+                }));
+            });
+        }
+
+        private bool AreDjDeckStemPlayersAllocated(int deckIndex)
+        {
+            if (deckIndex < 0 || deckIndex >= DjDeckPlayerCount)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < DjStemTypeCount; i++)
+            {
+                if (_djDeckStemPlayers[deckIndex, i] == null)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private bool IsDjDeckStemMixActive(int deckIndex)
+        {
+            if (deckIndex < 0 || deckIndex >= DjDeckPlayerCount)
+            {
+                return false;
+            }
+
+            if (_djDeckStemFiles[deckIndex] == null)
+            {
+                return false;
+            }
+
+            var sourceKey = _djDeckStemSourceKeys[deckIndex];
+            return !string.IsNullOrWhiteSpace(sourceKey) &&
+                   string.Equals(sourceKey, _djDeckStemPlayersSourceKeys[deckIndex], StringComparison.OrdinalIgnoreCase) &&
+                   AreDjDeckStemPlayersAllocated(deckIndex);
+        }
+
+        private void DisposeDjDeckStemPlayers(int deckIndex)
+        {
+            if (deckIndex < 0 || deckIndex >= DjDeckPlayerCount)
+            {
+                return;
+            }
+
+            for (var i = 0; i < DjStemTypeCount; i++)
+            {
+                try { _djDeckStemPlayers[deckIndex, i]?.Stop(); } catch { }
+                try { _djDeckStemPlayers[deckIndex, i]?.Dispose(); } catch { }
+                _djDeckStemPlayers[deckIndex, i] = null;
+            }
+
+            _djDeckStemPlayersSourceKeys[deckIndex] = null;
+        }
+
+        private void EnsureDjDeckStemPlayersLoaded(int deckIndex)
+        {
+            if (deckIndex < 0 || deckIndex >= DjDeckPlayerCount)
+            {
+                return;
+            }
+
+            if (_djDeckLibVlc == null)
+            {
+                return;
+            }
+
+            var stemFiles = _djDeckStemFiles[deckIndex];
+            var sourceKey = _djDeckStemSourceKeys[deckIndex];
+            if (stemFiles == null || string.IsNullOrWhiteSpace(sourceKey) || !string.Equals(stemFiles.SourceKey, sourceKey, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            if (!string.Equals(_djDeckStemPlayersSourceKeys[deckIndex], sourceKey, StringComparison.OrdinalIgnoreCase) || !AreDjDeckStemPlayersAllocated(deckIndex))
+            {
+                DisposeDjDeckStemPlayers(deckIndex);
+
+                for (var i = 0; i < DjStemTypeCount; i++)
+                {
+                    var stemType = (DjStemType)i;
+                    var stemPath = stemFiles.GetPath(stemType);
+                    if (!File.Exists(stemPath))
+                    {
+                        DisposeDjDeckStemPlayers(deckIndex);
+                        return;
+                    }
+
+                    var stemPlayer = new VlcMediaPlayer(_djDeckLibVlc);
+                    using var stemMedia = new VlcMedia(_djDeckLibVlc, new Uri(stemPath, UriKind.Absolute));
+                    stemPlayer.Media = stemMedia;
+                    _djDeckStemPlayers[deckIndex, i] = stemPlayer;
+                }
+
+                _djDeckStemPlayersSourceKeys[deckIndex] = sourceKey;
+            }
+
+            SyncDjDeckStemPlayersFromMain(deckIndex, forceSeek: true);
+        }
+
+        private void SetDjDeckStemPlayerVolume(int deckIndex, DjStemType stemType, double volumePercent)
+        {
+            var stemPlayer = _djDeckStemPlayers[deckIndex, (int)stemType];
+            if (stemPlayer == null)
+            {
+                return;
+            }
+
+            try
+            {
+                stemPlayer.Volume = (int)Math.Round(Math.Clamp(volumePercent, 0d, 100d));
+            }
+            catch { }
+        }
+
+        private void UpdateDjDeckStemPlayerVolumes(int deckIndex, double baseVolumePercent)
+        {
+            if (!IsDjDeckStemMixActive(deckIndex))
+            {
+                return;
+            }
+
+            var state = _djDeckSeparatorsStates[deckIndex];
+            var vocalVolume = baseVolumePercent * (Math.Clamp(state.Vocal, 0d, 100d) / 100d);
+            var intrumentalVolume = baseVolumePercent * (Math.Clamp(state.Intrumental, 0d, 100d) / 100d);
+            // With only Vocal + Intrumental controls in the UI, Intrumental must drive
+            // all non-vocal stems so the result behaves like true 2-stem mixing.
+            var bassVolume = intrumentalVolume;
+            var drumsVolume = intrumentalVolume;
+
+            SetDjDeckStemPlayerVolume(deckIndex, DjStemType.Vocal, vocalVolume);
+            SetDjDeckStemPlayerVolume(deckIndex, DjStemType.Intrumental, intrumentalVolume);
+            SetDjDeckStemPlayerVolume(deckIndex, DjStemType.Bass, bassVolume);
+            SetDjDeckStemPlayerVolume(deckIndex, DjStemType.Drums, drumsVolume);
+        }
+
+        private void PauseDjDeckStemPlayers(int deckIndex, bool resetTime)
+        {
+            if (deckIndex < 0 || deckIndex >= DjDeckPlayerCount)
+            {
+                return;
+            }
+
+            for (var i = 0; i < DjStemTypeCount; i++)
+            {
+                var stemPlayer = _djDeckStemPlayers[deckIndex, i];
+                if (stemPlayer == null)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    stemPlayer.SetPause(true);
+                    if (resetTime)
+                    {
+                        stemPlayer.Time = 0L;
+                    }
+                }
+                catch { }
+            }
+        }
+
+        private void SyncDjDeckStemPlayersFromMain(int deckIndex, bool forceSeek)
+        {
+            if (!IsDjDeckStemMixActive(deckIndex))
+            {
+                return;
+            }
+
+            var masterPlayer = _djDeckPlayers[deckIndex];
+            if (masterPlayer == null)
+            {
+                return;
+            }
+
+            long targetTimeMs = 0L;
+            try { targetTimeMs = Math.Max(0L, masterPlayer.Time); } catch { }
+
+            var shouldPlay = ViewModel.IsDjDeckLayout && masterPlayer.IsPlaying;
+            var syncThresholdMs = shouldPlay ? DjStemSyncHardSeekThresholdMs : DjStemSyncToleranceMs;
+
+            for (var i = 0; i < DjStemTypeCount; i++)
+            {
+                var stemPlayer = _djDeckStemPlayers[deckIndex, i];
+                if (stemPlayer == null)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var stemTimeMs = Math.Max(0L, stemPlayer.Time);
+                    var driftMs = Math.Abs(stemTimeMs - targetTimeMs);
+                    if (forceSeek || driftMs > syncThresholdMs)
+                    {
+                        stemPlayer.SeekTo(TimeSpan.FromMilliseconds(targetTimeMs));
+                    }
+                }
+                catch { }
+
+                try
+                {
+                    if (shouldPlay)
+                    {
+                        if (!stemPlayer.IsPlaying)
+                        {
+                            stemPlayer.Play();
+                        }
+                    }
+                    else
+                    {
+                        stemPlayer.SetPause(true);
+                    }
+                }
+                catch { }
+            }
+
+            var baseVolumePercent = ViewModel.IsDjDeckLayout
+                ? ViewModel.GetDjDeckPlaybackVolume(deckIndex) * 100d
+                : 0d;
+            UpdateDjDeckStemPlayerVolumes(deckIndex, baseVolumePercent);
         }
 
         private void UpdateAllDjDeckPlayerVolumes()
@@ -2633,7 +3374,17 @@ namespace MDJMediaPlayer
                 var volumePercent = ViewModel.IsDjDeckLayout
                     ? ViewModel.GetDjDeckPlaybackVolume(deckIndex) * 100d
                     : 0d;
-                player.Volume = (int)Math.Round(Math.Clamp(volumePercent, 0d, 100d));
+                EnsureDjDeckStemPlayersLoaded(deckIndex);
+                if (IsDjDeckStemMixActive(deckIndex))
+                {
+                    player.Volume = 0;
+                    UpdateDjDeckStemPlayerVolumes(deckIndex, volumePercent);
+                }
+                else
+                {
+                    player.Volume = (int)Math.Round(Math.Clamp(volumePercent, 0d, 100d));
+                    PauseDjDeckStemPlayers(deckIndex, resetTime: false);
+                }
             }
             catch { }
         }
@@ -2798,6 +3549,7 @@ namespace MDJMediaPlayer
                 catch { }
 
                 ViewModel.SetDjDeckTimeline(i, positionSeconds, durationSeconds);
+                SyncDjDeckStemPlayersFromMain(i, forceSeek: false);
             }
         }
 
@@ -2886,6 +3638,7 @@ namespace MDJMediaPlayer
                 _djDeckPlayerSources[deckIndex] = sourcePath;
                 _djDeckPlayerReady[deckIndex] = true;
                 _djDeckPlayerEnded[deckIndex] = false;
+                EnsureDjDeckStemSeparationStarted(deckIndex, sourcePath);
                 UpdateDjDeckPlayerVolume(deckIndex);
                 ApplyDjDeckEqualizer(deckIndex);
 
@@ -2903,11 +3656,13 @@ namespace MDJMediaPlayer
                         _djDeckPlayerEnded[deckIndex] = true;
                     }
 
+                    SyncDjDeckStemPlayersFromMain(deckIndex, forceSeek: true);
                     return started;
                 }
 
                 player.Media = media;
                 try { player.Time = 0L; } catch { }
+                SyncDjDeckStemPlayersFromMain(deckIndex, forceSeek: true);
                 return true;
             }
             catch
@@ -2965,6 +3720,7 @@ namespace MDJMediaPlayer
 
             if (string.Equals(_djDeckPlayerSources[deckIndex], item.FilePath, StringComparison.OrdinalIgnoreCase))
             {
+                EnsureDjDeckStemSeparationStarted(deckIndex, item.FilePath);
                 UpdateDjDeckPlayerVolume(deckIndex);
                 ApplyDjDeckEqualizer(deckIndex);
                 _djDeckPlayerReady[deckIndex] = true;
@@ -2985,6 +3741,7 @@ namespace MDJMediaPlayer
                     }
                     ViewModel.SetDjDeckPlaybackState(deckIndex, started);
                 }
+                SyncDjDeckStemPlayersFromMain(deckIndex, forceSeek: !autoplay);
                 return true;
             }
 
@@ -2993,12 +3750,19 @@ namespace MDJMediaPlayer
                 _djDeckPlayerPendingPlay[deckIndex] = false;
                 _djDeckPlayerReady[deckIndex] = false;
                 _djDeckPlayerEnded[deckIndex] = false;
+                _djDeckFailureRetryAttempted[deckIndex] = false;
                 _djDeckPlayerSources[deckIndex] = item.FilePath;
+                _djDeckStemSourceKeys[deckIndex] = null;
+                _djDeckStemFiles[deckIndex] = null;
+                _djDeckStemLastError[deckIndex] = null;
+                _djDeckStemSeparationRunning[deckIndex] = false;
+                DisposeDjDeckStemPlayers(deckIndex);
                 ViewModel.ResetDjDeckRuntimeState(deckIndex);
                 try { player.Stop(); } catch { }
                 using var media = new VlcMedia(_djDeckLibVlc, new Uri(item.FilePath, UriKind.Absolute));
                 player.Media = media;
                 _djDeckPlayerReady[deckIndex] = true;
+                EnsureDjDeckStemSeparationStarted(deckIndex, item.FilePath);
                 UpdateDjDeckPlayerVolume(deckIndex);
                 ApplyDjDeckEqualizer(deckIndex);
 
@@ -3019,6 +3783,7 @@ namespace MDJMediaPlayer
                 }
 
                 ViewModel.SetDjDeckTimeline(deckIndex, 0d, GetDjDeckDurationSeconds(deckIndex));
+                SyncDjDeckStemPlayersFromMain(deckIndex, forceSeek: true);
                 return true;
             }
             catch (Exception ex)
@@ -3026,7 +3791,13 @@ namespace MDJMediaPlayer
                 _djDeckPlayerPendingPlay[deckIndex] = false;
                 _djDeckPlayerReady[deckIndex] = false;
                 _djDeckPlayerEnded[deckIndex] = false;
+                _djDeckFailureRetryAttempted[deckIndex] = false;
                 _djDeckPlayerSources[deckIndex] = null;
+                _djDeckStemFiles[deckIndex] = null;
+                _djDeckStemSeparationRunning[deckIndex] = false;
+                _djDeckStemSourceKeys[deckIndex] = null;
+                _djDeckStemLastError[deckIndex] = null;
+                DisposeDjDeckStemPlayers(deckIndex);
                 ViewModel.SetDjDeckPlaybackState(deckIndex, false);
                 MessageBox.Show("Unable to load deck media: " + ex.Message, "Playback Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 return false;
@@ -3051,6 +3822,7 @@ namespace MDJMediaPlayer
             {
                 player.SetPause(true);
                 ViewModel.SetDjDeckPlaybackState(deckIndex, false);
+                SyncDjDeckStemPlayersFromMain(deckIndex, forceSeek: false);
                 return true;
             }
 
@@ -3067,7 +3839,44 @@ namespace MDJMediaPlayer
                 _djDeckPlayerEnded[deckIndex] = false;
             }
             ViewModel.SetDjDeckPlaybackState(deckIndex, started);
+            SyncDjDeckStemPlayersFromMain(deckIndex, forceSeek: true);
             return started;
+        }
+
+        private bool UnloadDjDeckPlayback(int deckIndex)
+        {
+            if (deckIndex < 0 || deckIndex >= _djDeckPlayers.Length)
+            {
+                return false;
+            }
+
+            _djDeckPlayerPendingPlay[deckIndex] = false;
+            _djDeckPlayerReady[deckIndex] = false;
+            _djDeckPlayerEnded[deckIndex] = false;
+            _djDeckFailureRetryAttempted[deckIndex] = false;
+            _djDeckPlayerSources[deckIndex] = null;
+            _djDeckStemFiles[deckIndex] = null;
+            _djDeckStemSeparationRunning[deckIndex] = false;
+            _djDeckStemSourceKeys[deckIndex] = null;
+            _djDeckStemLastError[deckIndex] = null;
+
+            try
+            {
+                var player = _djDeckPlayers[deckIndex];
+                if (player != null)
+                {
+                    player.SetPause(true);
+                    player.Stop();
+                    player.Media = null;
+                }
+            }
+            catch { }
+
+            PauseDjDeckStemPlayers(deckIndex, resetTime: true);
+            DisposeDjDeckStemPlayers(deckIndex);
+            ViewModel.SetDjDeckTimeline(deckIndex, 0d, 0d);
+            ViewModel.SetDjDeckPlaybackState(deckIndex, false);
+            return true;
         }
 
         private bool StopDjDeckPlayback(int deckIndex)
@@ -3087,6 +3896,7 @@ namespace MDJMediaPlayer
 
             _djDeckPlayerPendingPlay[deckIndex] = false;
             _djDeckPlayerEnded[deckIndex] = false;
+            _djDeckFailureRetryAttempted[deckIndex] = false;
             try
             {
                 var player = _djDeckPlayers[deckIndex];
@@ -3098,6 +3908,7 @@ namespace MDJMediaPlayer
             }
             catch { }
 
+            PauseDjDeckStemPlayers(deckIndex, resetTime: true);
             ViewModel.SetDjDeckTimeline(deckIndex, 0d, durationSeconds);
             ViewModel.SetDjDeckPlaybackState(deckIndex, false);
             return true;
@@ -3128,6 +3939,7 @@ namespace MDJMediaPlayer
                 }
                 ViewModel.SetDjDeckTimeline(deckIndex, 0d, durationSeconds);
                 ViewModel.SetDjDeckPlaybackState(deckIndex, started);
+                SyncDjDeckStemPlayersFromMain(deckIndex, forceSeek: true);
                 return started;
             }
             catch
@@ -3166,6 +3978,7 @@ namespace MDJMediaPlayer
             var targetMs = (long)Math.Round(targetSeconds * 1000d);
             _djDeckPlayers[deckIndex]?.SeekTo(TimeSpan.FromMilliseconds(targetMs));
             ViewModel.SetDjDeckTimeline(deckIndex, targetSeconds, durationSeconds);
+            SyncDjDeckStemPlayersFromMain(deckIndex, forceSeek: true);
             return true;
         }
 
@@ -3194,6 +4007,7 @@ namespace MDJMediaPlayer
             var targetMs = (long)Math.Round(targetSeconds * 1000d);
             _djDeckPlayers[deckIndex]?.SeekTo(TimeSpan.FromMilliseconds(targetMs));
             ViewModel.SetDjDeckTimeline(deckIndex, targetSeconds, durationSeconds);
+            SyncDjDeckStemPlayersFromMain(deckIndex, forceSeek: true);
             return true;
         }
 
@@ -3204,14 +4018,17 @@ namespace MDJMediaPlayer
                 return;
             }
 
+            _djDeckFailureRetryAttempted[deckIndex] = false;
             _djDeckPlayerReady[deckIndex] = true;
             _djDeckPlayerEnded[deckIndex] = false;
 
             var durationSeconds = GetDjDeckDurationSeconds(deckIndex);
             var positionSeconds = Math.Max(0L, _djDeckPlayers[deckIndex]?.Time ?? 0L) / 1000d;
             ViewModel.SetDjDeckTimeline(deckIndex, positionSeconds, durationSeconds);
+            EnsureDjDeckStemSeparationStarted(deckIndex, _djDeckPlayerSources[deckIndex]);
             UpdateDjDeckPlayerVolume(deckIndex);
             ApplyDjDeckEqualizer(deckIndex);
+            SyncDjDeckStemPlayersFromMain(deckIndex, forceSeek: true);
             ViewModel.SetDjDeckPlaybackState(deckIndex, _djDeckPlayers[deckIndex]?.IsPlaying ?? false);
         }
 
@@ -3226,6 +4043,7 @@ namespace MDJMediaPlayer
             _djDeckPlayerEnded[deckIndex] = true;
             var durationSeconds = GetDjDeckDurationSeconds(deckIndex);
             ViewModel.SetDjDeckTimeline(deckIndex, 0d, durationSeconds);
+            PauseDjDeckStemPlayers(deckIndex, resetTime: true);
 
             if (ViewModel.LoopMedia && ViewModel.IsDjDeckLayout)
             {
@@ -3239,6 +4057,7 @@ namespace MDJMediaPlayer
                     ViewModel.SetDjDeckPlaybackState(deckIndex, started);
                     if (started)
                     {
+                        SyncDjDeckStemPlayersFromMain(deckIndex, forceSeek: true);
                         return;
                     }
                 }
@@ -3248,6 +4067,35 @@ namespace MDJMediaPlayer
             ViewModel.SetDjDeckPlaybackState(deckIndex, false);
         }
 
+        private bool TryRecoverDjDeckPlaybackFailure(int deckIndex, string? sourcePath)
+        {
+            if (deckIndex < 0 || deckIndex >= _djDeckPlayers.Length)
+            {
+                return false;
+            }
+
+            if (_djDeckFailureRetryAttempted[deckIndex])
+            {
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(sourcePath) || !File.Exists(sourcePath))
+            {
+                return false;
+            }
+
+            _djDeckFailureRetryAttempted[deckIndex] = true;
+            _djDeckPlayerSources[deckIndex] = sourcePath;
+
+            var recovered = ReloadDjDeckPlayerMedia(deckIndex, autoplay: true);
+            if (recovered)
+            {
+                DebugStatus.Text = $"{GetDjDeckDisplayLabel(deckIndex)}: recovered from playback error.";
+            }
+
+            return recovered;
+        }
+
         private void HandleDjDeckMediaFailed(int deckIndex, Exception? exception)
         {
             if (deckIndex < 0 || deckIndex >= _djDeckPlayers.Length)
@@ -3255,14 +4103,30 @@ namespace MDJMediaPlayer
                 return;
             }
 
+            var sourcePath = _djDeckPlayerSources[deckIndex] ?? ViewModel.GetMediaItemForDjDeckSlot(deckIndex)?.FilePath;
+            if (TryRecoverDjDeckPlaybackFailure(deckIndex, sourcePath))
+            {
+                return;
+            }
+
             _djDeckPlayerPendingPlay[deckIndex] = false;
             _djDeckPlayerReady[deckIndex] = false;
             _djDeckPlayerEnded[deckIndex] = false;
+            _djDeckFailureRetryAttempted[deckIndex] = false;
             _djDeckPlayerSources[deckIndex] = null;
+            _djDeckStemFiles[deckIndex] = null;
+            _djDeckStemSeparationRunning[deckIndex] = false;
+            _djDeckStemSourceKeys[deckIndex] = null;
+            _djDeckStemLastError[deckIndex] = null;
+            DisposeDjDeckStemPlayers(deckIndex);
             ViewModel.SetDjDeckPlaybackState(deckIndex, false);
 
             var label = deckIndex < ViewModel.DjDeckSlots.Count ? ViewModel.DjDeckSlots[deckIndex].Label : $"Deck {deckIndex + 1}";
-            var message = exception?.Message ?? "Unknown deck playback failure.";
+            var message = exception?.Message ?? "LibVLC reported a deck playback error.";
+            if (!string.IsNullOrWhiteSpace(sourcePath))
+            {
+                message += $"{Environment.NewLine}{Environment.NewLine}Source: {sourcePath}";
+            }
             MessageBox.Show($"{label} playback failed: {message}", "Playback Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
 
@@ -5064,12 +5928,42 @@ namespace MDJMediaPlayer
 
                 ViewModel.SelectDjDeckSlot(deckIndex, toggleSelection: false);
 
-                if (ViewModel.LoadMediaIntoDjDeckSlot(slot))
+                if (ViewModel.LoadMediaIntoDjDeckSlot(slot, out var loadErrorMessage))
                 {
                     ViewModel.FocusDjDeckSlot(deckIndex);
                     PrepareDjDeckPlayer(deckIndex, autoplay: false);
+                    return;
+                }
+
+                if (!string.IsNullOrWhiteSpace(loadErrorMessage))
+                {
+                    MessageBox.Show(loadErrorMessage, "Deck System", MessageBoxButton.OK, MessageBoxImage.Warning);
                 }
             }
+        }
+
+        private void DjDeckUnloadFileButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not Button button || button.DataContext is not Models.DjDeckSlot slot)
+            {
+                return;
+            }
+
+            var deckIndex = ViewModel.GetDjDeckSlotIndex(slot);
+            if (deckIndex < 0)
+            {
+                return;
+            }
+
+            ViewModel.SelectDjDeckSlot(deckIndex, toggleSelection: false);
+
+            if (ViewModel.GetMediaItemForDjDeckSlot(deckIndex) == null)
+            {
+                return;
+            }
+
+            UnloadDjDeckPlayback(deckIndex);
+            ViewModel.UnloadDjDeckSlot(slot);
         }
 
         private void DjDeckStopButton_Click(object sender, RoutedEventArgs e)
@@ -5104,6 +5998,78 @@ namespace MDJMediaPlayer
 
             ViewModel.SelectDjDeckSlot(deckIndex, toggleSelection: false);
             ReplayDjDeckPlayback(deckIndex);
+        }
+
+        private void DjDeckSeparatorsButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not Button button || button.DataContext is not Models.DjDeckSlot slot)
+            {
+                return;
+            }
+
+            var deckIndex = ViewModel.GetDjDeckSlotIndex(slot);
+            if (deckIndex < 0)
+            {
+                return;
+            }
+
+            ViewModel.SelectDjDeckSlot(deckIndex, toggleSelection: false);
+
+            if (_separatorsWindow == null)
+            {
+                var separatorsWindow = new SeparatorsWindow
+                {
+                    Owner = this,
+                    ShowInTaskbar = false
+                };
+                separatorsWindow.LevelsChanged += SeparatorsWindow_LevelsChanged;
+                separatorsWindow.Closed += (_, _) =>
+                {
+                    separatorsWindow.LevelsChanged -= SeparatorsWindow_LevelsChanged;
+                    if (ReferenceEquals(_separatorsWindow, separatorsWindow))
+                    {
+                        _separatorsWindow = null;
+                    }
+                };
+                _separatorsWindow = separatorsWindow;
+            }
+
+            var deckLabel = string.IsNullOrWhiteSpace(slot.Label)
+                ? $"Deck {deckIndex + 1}"
+                : slot.Label;
+            var state = _djDeckSeparatorsStates[deckIndex];
+
+            _separatorsWindow.ConfigureDeck(deckIndex, deckLabel, state.Vocal, state.Intrumental);
+            var sourcePath = _djDeckPlayerSources[deckIndex] ?? ViewModel.GetMediaItemForDjDeckSlot(deckIndex)?.FilePath;
+            EnsureDjDeckStemSeparationStarted(deckIndex, sourcePath);
+
+            if (!_separatorsWindow.IsVisible)
+            {
+                _separatorsWindow.Show();
+            }
+
+            if (_separatorsWindow.WindowState == WindowState.Minimized)
+            {
+                _separatorsWindow.WindowState = WindowState.Normal;
+            }
+
+            _separatorsWindow.Activate();
+        }
+
+        private void SeparatorsWindow_LevelsChanged(object? sender, SeparatorsLevelsChangedEventArgs e)
+        {
+            if (e.DeckIndex < 0 || e.DeckIndex >= _djDeckSeparatorsStates.Length)
+            {
+                return;
+            }
+
+            var state = _djDeckSeparatorsStates[e.DeckIndex];
+            state.Vocal = e.Vocal;
+            state.Intrumental = e.Intrumental;
+            var sourcePath = _djDeckPlayerSources[e.DeckIndex] ?? ViewModel.GetMediaItemForDjDeckSlot(e.DeckIndex)?.FilePath;
+            EnsureDjDeckStemSeparationStarted(e.DeckIndex, sourcePath);
+            UpdateDjDeckPlayerVolume(e.DeckIndex);
+            SyncDjDeckStemPlayersFromMain(e.DeckIndex, forceSeek: false);
         }
 
         private void DjDeckSeekSlider_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)

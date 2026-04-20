@@ -7,9 +7,9 @@
     <UseWPF>true</UseWPF>
     <GenerateTemporaryTargetAssembly>false</GenerateTemporaryTargetAssembly>
     <AssemblyName>MDJMediaPlayer</AssemblyName>
-    <Version>2.3.1</Version>
-    <AssemblyVersion>2.3.1.0</AssemblyVersion>
-    <FileVersion>2.3.1.0</FileVersion>
+    <Version>2.4.0</Version>
+    <AssemblyVersion>2.4.0.0</AssemblyVersion>
+    <FileVersion>2.4.0.0</FileVersion>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
@@ -20,6 +20,9 @@
     <Resource Include="Assets\app.ico" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="Ai\stem_separate.py" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
     <Compile Remove="artifacts\**\*.cs" />
     <EmbeddedResource Remove="artifacts\**\*" />
     <None Remove="artifacts\**\*" />
@@ -28,11 +31,12 @@
 
   <Target Name="RecoverMissingWpfGeneratedSources"
           BeforeTargets="CoreCompile"
-          Condition="'$(MSBuildProjectName)' == 'MDJMediaPlayer' and (
+          Condition="(
                      !Exists('$(IntermediateOutputPath)MainWindow.g.cs')
                      or !Exists('$(IntermediateOutputPath)AdvancedMixerWindow.g.cs')
                      or !Exists('$(IntermediateOutputPath)SettingsWindow.g.cs')
                      or !Exists('$(IntermediateOutputPath)SFXWindow.g.cs')
+                     or !Exists('$(IntermediateOutputPath)SeparatorsWindow.g.cs')
                      or !Exists('$(IntermediateOutputPath)MDJMediaPlayer_Content.g.cs')
                      or !Exists('$(IntermediateOutputPath)GeneratedInternalTypeHelper.g.cs'))">
     <Message Text="Recovering missing WPF generated sources in $(IntermediateOutputPath)." Importance="High" />

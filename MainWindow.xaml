@@ -257,6 +257,7 @@
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
                         <TextBlock Text="{Binding TrackSubtitle}"
                                    Foreground="#C8D7E0"
@@ -269,6 +270,13 @@
                                 Padding="10,2"
                                 MinWidth="72"
                                 Click="DjDeckAddFileButton_Click" />
+                        <Button Grid.Column="2"
+                                Content="unload file"
+                                Margin="8,0,0,0"
+                                Padding="10,2"
+                                MinWidth="92"
+                                IsEnabled="{Binding CanInteract}"
+                                Click="DjDeckUnloadFileButton_Click" />
                     </Grid>
 
                     <Slider Grid.Row="3"
@@ -317,6 +325,16 @@
                                                FontSize="11"
                                                FontWeight="SemiBold" />
                                 </StackPanel>
+                            </Button>
+                            <Button Margin="0,0,8,0"
+                                    Padding="8,2"
+                                    MinWidth="92"
+                                    IsEnabled="{Binding CanInteract}"
+                                    Click="DjDeckSeparatorsButton_Click">
+                                <TextBlock Text="separators"
+                                           Foreground="#FFFFFF"
+                                           FontSize="11"
+                                           FontWeight="SemiBold" />
                             </Button>
                             <Button Padding="8,2"
                                     MinWidth="74"
