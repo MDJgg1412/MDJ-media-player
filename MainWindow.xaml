@@ -788,18 +788,8 @@
 
                                     <StackPanel Grid.Row="2"
                                                 Margin="0,4,0,0">
-                                        <TextBlock Text="Crossfader"
-                                                   Foreground="#A3BBCB"
-                                                   FontSize="11"
-                                                   Margin="0,0,0,6" />
-                                        <Slider Minimum="0"
-                                                Maximum="100"
-                                                Tag="50"
-                                                PreviewMouseDoubleClick="MixerSlider_PreviewMouseDoubleClick"
-                                                Value="{Binding Crossfader, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                                         <Button x:Name="AdvancedMixerButton"
                                                 Content="Advanced Mixer"
-                                                Margin="0,10,0,0"
                                                 Click="AdvancedMixerButton_Click" />
                                     </StackPanel>
                                 </Grid>

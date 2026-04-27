@@ -92,7 +92,6 @@
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
                     <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
                 <StackPanel>
@@ -339,39 +338,6 @@
                 </ScrollViewer>
 
                 <Border Grid.Row="2"
-                        Margin="0,10,0,0"
-                        Padding="14,10"
-                        CornerRadius="12"
-                        Background="#B3111922"
-                        BorderBrush="#4D6A8196"
-                        BorderThickness="1">
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <StackPanel Grid.Column="0" Margin="0,0,14,0" VerticalAlignment="Center">
-                            <TextBlock Text="Crossfader" Foreground="#CFE6F8" FontWeight="SemiBold" />
-                            <TextBlock Text="Double-click to reset center" Foreground="#93AEC3" FontSize="11" />
-                        </StackPanel>
-                        <Slider Grid.Column="1"
-                                Minimum="0"
-                                Maximum="100"
-                                Tag="50"
-                                PreviewMouseDoubleClick="MixerSlider_PreviewMouseDoubleClick"
-                                Value="{Binding Crossfader, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                        <TextBlock Grid.Column="2"
-                                   Text="{Binding Crossfader, StringFormat={}{0:0}%}"
-                                   Foreground="#F5FBFF"
-                                   FontSize="14"
-                                   FontWeight="SemiBold"
-                                   VerticalAlignment="Center"
-                                   Margin="14,0,0,0" />
-                    </Grid>
-                </Border>
-
-                <Border Grid.Row="3"
                         Margin="0,10,0,0"
                         Padding="14,12"
                         CornerRadius="12"

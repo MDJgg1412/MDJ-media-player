@@ -24,12 +24,19 @@ namespace MDJMediaPlayer
     {
         private bool _allowClose;
         private bool _suppressLevelEvents;
+        private bool _pendingStemLevelCommit;
+        private readonly System.Windows.Threading.DispatcherTimer _dragCommitTimer;
         private int _deckIndex = -1;
         public event EventHandler<SeparatorsLevelsChangedEventArgs>? LevelsChanged;
 
         public SeparatorsWindow()
         {
             InitializeComponent();
+            _dragCommitTimer = new System.Windows.Threading.DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(33)
+            };
+            _dragCommitTimer.Tick += DragCommitTimer_Tick;
         }
 
         public void ConfigureDeck(int deckIndex, string deckLabel, double vocal, double intrumental)
@@ -90,6 +97,28 @@ namespace MDJMediaPlayer
                 return;
             }
 
+            _pendingStemLevelCommit = true;
+            if (!_dragCommitTimer.IsEnabled)
+            {
+                _dragCommitTimer.Start();
+            }
+        }
+
+        private void DragCommitTimer_Tick(object? sender, EventArgs e)
+        {
+            _dragCommitTimer.Stop();
+
+            if (!_pendingStemLevelCommit || _suppressLevelEvents || _deckIndex < 0)
+            {
+                return;
+            }
+
+            _pendingStemLevelCommit = false;
+            RaiseLevelsChanged();
+        }
+
+        private void RaiseLevelsChanged()
+        {
             LevelsChanged?.Invoke(
                 this,
                 new SeparatorsLevelsChangedEventArgs(

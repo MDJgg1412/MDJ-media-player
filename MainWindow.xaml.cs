@@ -135,6 +135,7 @@ namespace MDJMediaPlayer
         private bool _djDeckAudioEngineFailed = false;
         private readonly VlcMediaPlayer?[] _djDeckPlayers = new VlcMediaPlayer?[DjDeckPlayerCount];
         private readonly VlcEqualizer?[] _djDeckEqualizers = new VlcEqualizer?[DjDeckPlayerCount];
+        private readonly VlcEqualizer?[,] _djDeckStemEqualizers = new VlcEqualizer?[DjDeckPlayerCount, DjStemTypeCount];
         private readonly string?[] _djDeckPlayerSources = new string?[DjDeckPlayerCount];
         private readonly bool[] _djDeckPlayerReady = new bool[DjDeckPlayerCount];
         private readonly bool[] _djDeckPlayerPendingPlay = new bool[DjDeckPlayerCount];
@@ -150,6 +151,8 @@ namespace MDJMediaPlayer
         private readonly string?[] _djDeckStemPlayersSourceKeys = new string?[DjDeckPlayerCount];
         private readonly string?[] _djDeckStemLastError = new string?[DjDeckPlayerCount];
         private readonly DjDeckSeparatorsState[] _djDeckSeparatorsStates = CreateDefaultDjDeckSeparatorsStates();
+        private readonly DjDeckSeparatorsState[] _djDeckAppliedSeparatorsStates = CreateDefaultDjDeckSeparatorsStates();
+        private System.Windows.Threading.DispatcherTimer? _djDeckStemVolumeRampTimer;
         private const double MasterVolumeKeyStep = 0.05d;
         private Panel? _audioWaveOverlayHomeParent;
         private int _audioWaveOverlayHomeIndex = -1;
@@ -236,6 +239,67 @@ namespace MDJMediaPlayer
             return states;
         }
 
+        private void StartDjDeckStemVolumeRamp()
+        {
+            _djDeckStemVolumeRampTimer?.Start();
+        }
+
+        private void DjDeckStemVolumeRampTimer_Tick(object? sender, EventArgs e)
+        {
+            var hasPendingRamp = false;
+
+            for (var deckIndex = 0; deckIndex < DjDeckPlayerCount; deckIndex++)
+            {
+                var targetState = _djDeckSeparatorsStates[deckIndex];
+                var appliedState = _djDeckAppliedSeparatorsStates[deckIndex];
+
+                var nextVocal = StepTowards(appliedState.Vocal, targetState.Vocal, 8d);
+                var nextIntrumental = StepTowards(appliedState.Intrumental, targetState.Intrumental, 8d);
+                var changed = !AreClose(nextVocal, appliedState.Vocal) || !AreClose(nextIntrumental, appliedState.Intrumental);
+
+                if (changed)
+                {
+                    appliedState.Vocal = nextVocal;
+                    appliedState.Intrumental = nextIntrumental;
+
+                    if (IsDjDeckStemMixActive(deckIndex))
+                    {
+                        var baseVolumePercent = ViewModel.IsDjDeckLayout
+                            ? ViewModel.GetDjDeckPlaybackVolumePercent(deckIndex)
+                            : 0d;
+                        UpdateDjDeckStemPlayerVolumes(deckIndex, baseVolumePercent, appliedState);
+                    }
+                }
+
+                if (!AreClose(appliedState.Vocal, targetState.Vocal) ||
+                    !AreClose(appliedState.Intrumental, targetState.Intrumental))
+                {
+                    hasPendingRamp = true;
+                }
+            }
+
+            if (!hasPendingRamp)
+            {
+                _djDeckStemVolumeRampTimer?.Stop();
+            }
+        }
+
+        private static double StepTowards(double current, double target, double maxStep)
+        {
+            var delta = target - current;
+            if (Math.Abs(delta) <= maxStep)
+            {
+                return target;
+            }
+
+            return current + Math.Sign(delta) * maxStep;
+        }
+
+        private static bool AreClose(double left, double right)
+        {
+            return Math.Abs(left - right) < 0.05d;
+        }
+
         public MainWindow()
         {
             InitializeComponent();
@@ -257,9 +321,12 @@ namespace MDJMediaPlayer
             ViewModel.Playlist.CollectionChanged += Playlist_CollectionChanged;
 
             // Setup a timer to update playback position
-            _timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+            _timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) };
             _timer.Tick += Timer_Tick;
             _timer.Start();
+
+            _djDeckStemVolumeRampTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
+            _djDeckStemVolumeRampTimer.Tick += DjDeckStemVolumeRampTimer_Tick;
 
             _audioWaveTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(25) };
             _audioWaveTimer.Tick += AudioWaveTimer_Tick;
@@ -3163,6 +3230,8 @@ namespace MDJMediaPlayer
 
             for (var i = 0; i < DjStemTypeCount; i++)
             {
+                try { _djDeckStemEqualizers[deckIndex, i]?.Dispose(); } catch { }
+                _djDeckStemEqualizers[deckIndex, i] = null;
                 try { _djDeckStemPlayers[deckIndex, i]?.Stop(); } catch { }
                 try { _djDeckStemPlayers[deckIndex, i]?.Dispose(); } catch { }
                 _djDeckStemPlayers[deckIndex, i] = null;
@@ -3211,6 +3280,7 @@ namespace MDJMediaPlayer
                 }
 
                 _djDeckStemPlayersSourceKeys[deckIndex] = sourceKey;
+                ApplyDjDeckStemEqualizers(deckIndex);
             }
 
             SyncDjDeckStemPlayersFromMain(deckIndex, forceSeek: true);
@@ -3226,19 +3296,19 @@ namespace MDJMediaPlayer
 
             try
             {
-                stemPlayer.Volume = (int)Math.Round(Math.Clamp(volumePercent, 0d, 100d));
+                stemPlayer.Volume = (int)Math.Round(Math.Clamp(volumePercent, 0d, 200d));
             }
             catch { }
         }
 
-        private void UpdateDjDeckStemPlayerVolumes(int deckIndex, double baseVolumePercent)
+        private void UpdateDjDeckStemPlayerVolumes(int deckIndex, double baseVolumePercent, DjDeckSeparatorsState? separatorState = null)
         {
             if (!IsDjDeckStemMixActive(deckIndex))
             {
                 return;
             }
 
-            var state = _djDeckSeparatorsStates[deckIndex];
+            var state = separatorState ?? _djDeckAppliedSeparatorsStates[deckIndex];
             var vocalVolume = baseVolumePercent * (Math.Clamp(state.Vocal, 0d, 100d) / 100d);
             var intrumentalVolume = baseVolumePercent * (Math.Clamp(state.Intrumental, 0d, 100d) / 100d);
             // With only Vocal + Intrumental controls in the UI, Intrumental must drive
@@ -3335,7 +3405,7 @@ namespace MDJMediaPlayer
             }
 
             var baseVolumePercent = ViewModel.IsDjDeckLayout
-                ? ViewModel.GetDjDeckPlaybackVolume(deckIndex) * 100d
+                ? ViewModel.GetDjDeckPlaybackVolumePercent(deckIndex)
                 : 0d;
             UpdateDjDeckStemPlayerVolumes(deckIndex, baseVolumePercent);
         }
@@ -3372,9 +3442,14 @@ namespace MDJMediaPlayer
                 }
 
                 var volumePercent = ViewModel.IsDjDeckLayout
-                    ? ViewModel.GetDjDeckPlaybackVolume(deckIndex) * 100d
+                    ? ViewModel.GetDjDeckPlaybackVolumePercent(deckIndex)
                     : 0d;
-                EnsureDjDeckStemPlayersLoaded(deckIndex);
+
+                if (!IsDjDeckStemMixActive(deckIndex) && _djDeckStemFiles[deckIndex] != null)
+                {
+                    EnsureDjDeckStemPlayersLoaded(deckIndex);
+                }
+
                 if (IsDjDeckStemMixActive(deckIndex))
                 {
                     player.Volume = 0;
@@ -3382,7 +3457,7 @@ namespace MDJMediaPlayer
                 }
                 else
                 {
-                    player.Volume = (int)Math.Round(Math.Clamp(volumePercent, 0d, 100d));
+                    player.Volume = (int)Math.Round(Math.Clamp(volumePercent, 0d, 200d));
                     PauseDjDeckStemPlayers(deckIndex, resetTime: false);
                 }
             }
@@ -3406,26 +3481,65 @@ namespace MDJMediaPlayer
             {
                 try { _djDeckEqualizers[deckIndex]?.Dispose(); } catch { }
                 _djDeckEqualizers[deckIndex] = null;
-
-                var equalizer = new VlcEqualizer();
-                equalizer.SetPreamp(0f);
-
-                for (var i = 0; i < DjEqBandFrequenciesHz.Length; i++)
-                {
-                    var frequencyHz = DjEqBandFrequenciesHz[i];
-                    var globalGainDb = GetGlobalEqualizerGainDb(frequencyHz);
-                    var deckToneGainDb = GetDeckToneGainDb(deckIndex, frequencyHz);
-                    var finalGainDb = (float)Math.Clamp(globalGainDb + deckToneGainDb, -20d, 20d);
-                    equalizer.SetAmp(finalGainDb, (uint)i);
-                }
-
+                var equalizer = CreateDjDeckEqualizer(deckIndex);
                 player.SetEqualizer(equalizer);
                 _djDeckEqualizers[deckIndex] = equalizer;
+
+                ApplyDjDeckStemEqualizers(deckIndex);
             }
             catch
             {
                 try { _djDeckEqualizers[deckIndex]?.Dispose(); } catch { }
                 _djDeckEqualizers[deckIndex] = null;
+            }
+        }
+
+        private VlcEqualizer CreateDjDeckEqualizer(int deckIndex)
+        {
+            var equalizer = new VlcEqualizer();
+            equalizer.SetPreamp(0f);
+
+            for (var i = 0; i < DjEqBandFrequenciesHz.Length; i++)
+            {
+                var frequencyHz = DjEqBandFrequenciesHz[i];
+                var globalGainDb = GetGlobalEqualizerGainDb(frequencyHz);
+                var deckToneGainDb = GetDeckToneGainDb(deckIndex, frequencyHz);
+                var finalGainDb = (float)Math.Clamp(globalGainDb + deckToneGainDb, -20d, 20d);
+                equalizer.SetAmp(finalGainDb, (uint)i);
+            }
+
+            return equalizer;
+        }
+
+        private void ApplyDjDeckStemEqualizers(int deckIndex)
+        {
+            if (deckIndex < 0 || deckIndex >= DjDeckPlayerCount)
+            {
+                return;
+            }
+
+            for (var i = 0; i < DjStemTypeCount; i++)
+            {
+                try { _djDeckStemEqualizers[deckIndex, i]?.Dispose(); } catch { }
+                _djDeckStemEqualizers[deckIndex, i] = null;
+
+                var stemPlayer = _djDeckStemPlayers[deckIndex, i];
+                if (stemPlayer == null)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var equalizer = CreateDjDeckEqualizer(deckIndex);
+                    stemPlayer.SetEqualizer(equalizer);
+                    _djDeckStemEqualizers[deckIndex, i] = equalizer;
+                }
+                catch
+                {
+                    try { _djDeckStemEqualizers[deckIndex, i]?.Dispose(); } catch { }
+                    _djDeckStemEqualizers[deckIndex, i] = null;
+                }
             }
         }
 
@@ -6066,10 +6180,21 @@ namespace MDJMediaPlayer
             var state = _djDeckSeparatorsStates[e.DeckIndex];
             state.Vocal = e.Vocal;
             state.Intrumental = e.Intrumental;
+
+            if (IsDjDeckStemMixActive(e.DeckIndex))
+            {
+                StartDjDeckStemVolumeRamp();
+                return;
+            }
+
+            var appliedState = _djDeckAppliedSeparatorsStates[e.DeckIndex];
+            appliedState.Vocal = e.Vocal;
+            appliedState.Intrumental = e.Intrumental;
+
             var sourcePath = _djDeckPlayerSources[e.DeckIndex] ?? ViewModel.GetMediaItemForDjDeckSlot(e.DeckIndex)?.FilePath;
             EnsureDjDeckStemSeparationStarted(e.DeckIndex, sourcePath);
             UpdateDjDeckPlayerVolume(e.DeckIndex);
-            SyncDjDeckStemPlayersFromMain(e.DeckIndex, forceSeek: false);
+            StartDjDeckStemVolumeRamp();
         }
 
         private void DjDeckSeekSlider_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
